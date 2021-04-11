@@ -72,14 +72,15 @@ class NullEditorConsumer : public EditorConsumer {
 
   void recordAffectedLineRange(unsigned Line, unsigned Length) override {}
 
+  bool diagnosticsEnabled() override { return false; }
+
   void setDiagnosticStage(UIdent DiagStage) override {}
   void handleDiagnostic(const DiagnosticEntryInfo &Info,
                         UIdent DiagStage) override {}
   void recordFormattedText(StringRef Text) override {}
 
   void handleSourceText(StringRef Text) override {}
-  void handleSyntaxTree(const swift::syntax::SourceFileSyntax &SyntaxTree,
-                        std::unordered_set<unsigned> &ReusedNodeIds) override {}
+  void handleSyntaxTree(const swift::syntax::SourceFileSyntax &SyntaxTree) override {}
 
   SyntaxTreeTransferMode syntaxTreeTransferMode() override {
     return SyntaxTreeTransferMode::Off;
@@ -116,6 +117,7 @@ public:
 
   CursorInfoTest()
       : Ctx(*new SourceKit::Context(getRuntimeLibPath(),
+                                    /*diagnosticDocumentationPath*/ "",
                                     SourceKit::createSwiftLangSupport,
                                     /*dispatchOnMain=*/false)) {
     // This is avoiding destroying \p SourceKit::Context because another
@@ -147,19 +149,22 @@ public:
     Semaphore sema(0);
 
     TestCursorInfo TestInfo;
-    getLang().getCursorInfo(DocName, Offset, 0, false, false, Args, None,
+    getLang().getCursorInfo(DocName, Offset, 0, false, false, false, Args, None,
       [&](const RequestResult<CursorInfoData> &Result) {
         assert(!Result.isCancelled());
         if (Result.isError()) {
-          TestInfo.Error = Result.getError();
+          TestInfo.Error = Result.getError().str();
           sema.signal();
           return;
         }
         const CursorInfoData &Info = Result.value();
-        TestInfo.Name = Info.Name;
-        TestInfo.Typename = Info.TypeName;
-        TestInfo.Filename = Info.Filename;
-        TestInfo.DeclarationLoc = Info.DeclarationLoc;
+        if (!Info.Symbols.empty()) {
+          const CursorSymbolInfo &MainSymbol = Info.Symbols[0];
+          TestInfo.Name = std::string(MainSymbol.Name.str());
+          TestInfo.Typename = MainSymbol.TypeName.str();
+          TestInfo.Filename = MainSymbol.Filename.str();
+          TestInfo.DeclarationLoc = MainSymbol.DeclarationLoc;
+        }
         sema.signal();
       });
 

@@ -40,34 +40,93 @@ class DataLayout;
 
 namespace swift {
 
+class TBDGenDescriptor;
 struct TBDGenOptions;
+class SymbolSource;
 
 namespace tbdgen {
 
-class TBDGenVisitor : public ASTVisitor<TBDGenVisitor> {
-public:
-  llvm::MachO::InterfaceFile &Symbols;
-  llvm::MachO::TargetList Targets;
-  StringSet *StringSymbols;
-  const llvm::DataLayout &DataLayout;
+enum class LinkerPlatformId: uint8_t {
+#define LD_PLATFORM(Name, Id) Name = Id,
+#include "ldPlatformKinds.def"
+};
 
-  const UniversalLinkageInfo &UniversalLinkInfo;
+struct InstallNameStore {
+  // The default install name to use when no specific install name is specified.
+  std::string InstallName;
+  // The install name specific to the platform id. This takes precedence over
+  // the default install name.
+  std::map<uint8_t, std::string> PlatformInstallName;
+  StringRef getInstallName(LinkerPlatformId Id) const;
+  void remark(ASTContext &Ctx, StringRef ModuleName) const;
+};
+
+/// A set of callbacks for recording APIs.
+class APIRecorder {
+public:
+  virtual ~APIRecorder() {}
+
+  virtual void addSymbol(StringRef name, llvm::MachO::SymbolKind kind,
+                         SymbolSource source) {}
+  virtual void addObjCInterface(const ClassDecl *decl) {}
+  virtual void addObjCMethod(const ClassDecl *cls, SILDeclRef method) {}
+};
+
+class SimpleAPIRecorder final : public APIRecorder {
+public:
+  using SymbolCallbackFn = llvm::function_ref<void(
+      StringRef, llvm::MachO::SymbolKind, SymbolSource)>;
+
+  SimpleAPIRecorder(SymbolCallbackFn func) : func(func) {}
+
+  void addSymbol(StringRef symbol, llvm::MachO::SymbolKind kind,
+                 SymbolSource source) override {
+    func(symbol, kind, source);
+  }
+private:
+  SymbolCallbackFn func;
+};
+
+class TBDGenVisitor : public ASTVisitor<TBDGenVisitor> {
+#ifndef NDEBUG
+  /// Tracks the symbols emitted to ensure we don't emit any duplicates.
+  llvm::StringSet<> DuplicateSymbolChecker;
+#endif
+
+  const llvm::DataLayout &DataLayout;
+  UniversalLinkageInfo UniversalLinkInfo;
   ModuleDecl *SwiftModule;
   const TBDGenOptions &Opts;
-  Decl* TopLevelDecl = nullptr;
+  APIRecorder &recorder;
 
-private:
+  using SymbolKind = llvm::MachO::SymbolKind;
+
+  /// A set of original function and derivative configuration pairs for which
+  /// derivative symbols have been emitted.
+  ///
+  /// Used to deduplicate derivative symbol emission for `@differentiable` and
+  /// `@derivative` attributes.
+  llvm::DenseSet<std::pair<AbstractFunctionDecl *, AutoDiffConfig>>
+      AddedDerivatives;
+
+  std::vector<Decl*> DeclStack;
+  std::unique_ptr<std::map<std::string, InstallNameStore>>
+    previousInstallNameMap;
+  std::unique_ptr<std::map<std::string, InstallNameStore>>
+    parsePreviousModuleInstallNameMap();
   void addSymbolInternal(StringRef name, llvm::MachO::SymbolKind kind,
-                         bool isLinkerDirective = false);
-  void addLinkerDirectiveSymbols(StringRef name, llvm::MachO::SymbolKind kind);
-  void addSymbol(StringRef name, llvm::MachO::SymbolKind kind =
-                                     llvm::MachO::SymbolKind::GlobalSymbol);
+                         SymbolSource source);
+  void addLinkerDirectiveSymbolsLdHide(StringRef name, llvm::MachO::SymbolKind kind);
+  void addLinkerDirectiveSymbolsLdPrevious(StringRef name, llvm::MachO::SymbolKind kind);
+  void addSymbol(StringRef name, SymbolSource source,
+                 SymbolKind kind = SymbolKind::GlobalSymbol);
 
   void addSymbol(SILDeclRef declRef);
+  void addAsyncFunctionPointerSymbol(AbstractFunctionDecl *AFD);
 
   void addSymbol(LinkEntity entity);
 
-  void addConformances(DeclContext *DC);
+  void addConformances(const IterableDeclContext *IDC);
 
   void addDispatchThunk(SILDeclRef declRef);
 
@@ -78,22 +137,61 @@ private:
   void addAssociatedConformanceDescriptor(AssociatedConformance conformance);
   void addBaseConformanceDescriptor(BaseConformance conformance);
 
-public:
-  TBDGenVisitor(llvm::MachO::InterfaceFile &symbols,
-                llvm::MachO::TargetList targets, StringSet *stringSymbols,
-                const llvm::DataLayout &dataLayout,
-                const UniversalLinkageInfo &universalLinkInfo,
-                ModuleDecl *swiftModule, const TBDGenOptions &opts)
-      : Symbols(symbols), Targets(targets), StringSymbols(stringSymbols),
-        DataLayout(dataLayout), UniversalLinkInfo(universalLinkInfo),
-        SwiftModule(swiftModule), Opts(opts) {}
+  /// Adds the symbol for the linear map function of the given kind associated
+  /// with the given original function and derivative function configuration.
+  void addAutoDiffLinearMapFunction(AbstractFunctionDecl *original,
+                                    AutoDiffConfig config,
+                                    AutoDiffLinearMapKind kind);
 
+  /// Adds the symbol for the autodiff function of the given kind associated
+  /// with the given original function, parameter indices, and derivative
+  /// generic signature.
+  void
+  addAutoDiffDerivativeFunction(AbstractFunctionDecl *original,
+                                IndexSubset *parameterIndices,
+                                GenericSignature derivativeGenericSignature,
+                                AutoDiffDerivativeFunctionKind kind);
+
+  /// Adds the symbol for the differentiability witness associated with the
+  /// given original function, AST parameter indices, result indices, and
+  /// derivative generic signature.
+  void addDifferentiabilityWitness(AbstractFunctionDecl *original,
+                                   DifferentiabilityKind kind,
+                                   IndexSubset *astParameterIndices,
+                                   IndexSubset *resultIndices,
+                                   GenericSignature derivativeGenericSignature);
+
+  /// Adds symbols associated with the given original function and
+  /// derivative function configuration.
+  void addDerivativeConfiguration(DifferentiabilityKind diffKind,
+                                  AbstractFunctionDecl *original,
+                                  AutoDiffConfig config);
+
+public:
+  TBDGenVisitor(const llvm::Triple &target, const llvm::DataLayout &dataLayout,
+                ModuleDecl *swiftModule, const TBDGenOptions &opts,
+                APIRecorder &recorder)
+      : DataLayout(dataLayout),
+        UniversalLinkInfo(target, opts.HasMultipleIGMs, /*forcePublic*/ false),
+        SwiftModule(swiftModule), Opts(opts), recorder(recorder),
+        previousInstallNameMap(parsePreviousModuleInstallNameMap()) {}
+
+  /// Create a new visitor using the target and layout information from a
+  /// TBDGenDescriptor.
+  TBDGenVisitor(const TBDGenDescriptor &desc, APIRecorder &recorder);
+
+  ~TBDGenVisitor() { assert(DeclStack.empty()); }
   void addMainIfNecessary(FileUnit *file) {
     // HACK: 'main' is a special symbol that's always emitted in SILGen if
     //       the file has an entry point. Since it doesn't show up in the
     //       module until SILGen, we need to explicitly add it here.
-    if (file->hasEntryPoint())
-      addSymbol("main");
+    //
+    // Make sure to only add the main symbol for the module that we're emitting
+    // TBD for, and not for any statically linked libraries.
+    // FIXME: We should have a SymbolSource for main.
+    if (file->hasEntryPoint() && file->getParentModule() == SwiftModule)
+      addSymbol(SwiftModule->getASTContext().getEntryPointFunctionName(),
+                SymbolSource::forUnknown());
   }
 
   /// Adds the global symbols associated with the first file.
@@ -128,6 +226,14 @@ public:
   void visitEnumElementDecl(EnumElementDecl *EED);
 
   void visitDecl(Decl *D) {}
+
+  void visit(Decl *D);
+
+  /// Visit the symbols in a given file unit.
+  void visitFile(FileUnit *file);
+
+  /// Visit the files specified by a given TBDGenDescriptor.
+  void visit(const TBDGenDescriptor &desc);
 };
 } // end namespace tbdgen
 } // end namespace swift

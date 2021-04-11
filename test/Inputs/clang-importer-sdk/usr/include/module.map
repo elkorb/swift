@@ -136,3 +136,13 @@ module WinBOOL {
   header "winbool.h"
   export *
 }
+
+module ObjCConcurrency {
+  header "ObjCConcurrency.h"
+  export *
+}
+
+module EffectfulProperties {
+  header "EffectfulProperties.h"
+  export *
+}

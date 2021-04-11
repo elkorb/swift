@@ -96,8 +96,7 @@ void MapOpaqueArchetypes::replace() {
   cloneFunctionBody(&fn, clonedEntryBlock, entryArgs,
                     true /*replaceOriginalFunctionInPlace*/);
   // Insert the new entry block at the beginning.
-  fn.getBlocks().splice(fn.getBlocks().begin(), fn.getBlocks(),
-                        clonedEntryBlock);
+  fn.moveBlockBefore(clonedEntryBlock, fn.begin());
   removeUnreachableBlocks(fn);
 }
 
@@ -131,7 +130,7 @@ static bool hasOpaqueArchetypeOperand(TypeExpansionContext context,
 static bool hasOpaqueArchetypeResult(TypeExpansionContext context,
                                      SILInstruction &inst) {
   // Check the results for opaque types.
-  for (const auto &res : inst.getResults())
+  for (SILValue res : inst.getResults())
     if (opaqueArchetypeWouldChange(context, res->getType().getASTType()))
       return true;
   return false;
@@ -161,6 +160,7 @@ static bool hasOpaqueArchetype(TypeExpansionContext context,
   case SILInstructionKind::PreviousDynamicFunctionRefInst:
   case SILInstructionKind::GlobalAddrInst:
   case SILInstructionKind::GlobalValueInst:
+  case SILInstructionKind::BaseAddrForOffsetInst:
   case SILInstructionKind::IntegerLiteralInst:
   case SILInstructionKind::FloatLiteralInst:
   case SILInstructionKind::StringLiteralInst:
@@ -176,6 +176,7 @@ static bool hasOpaqueArchetype(TypeExpansionContext context,
   case SILInstructionKind::UncheckedAddrCastInst:
   case SILInstructionKind::UncheckedTrivialBitCastInst:
   case SILInstructionKind::UncheckedBitwiseCastInst:
+  case SILInstructionKind::UncheckedValueCastInst:
   case SILInstructionKind::RefToRawPointerInst:
   case SILInstructionKind::RawPointerToRefInst:
 #define LOADABLE_REF_STORAGE(Name, ...)                                        \
@@ -327,6 +328,17 @@ static bool hasOpaqueArchetype(TypeExpansionContext context,
   case SILInstructionKind::CondFailInst:
   case SILInstructionKind::DestructureStructInst:
   case SILInstructionKind::DestructureTupleInst:
+  case SILInstructionKind::DifferentiableFunctionInst:
+  case SILInstructionKind::DifferentiableFunctionExtractInst:
+  case SILInstructionKind::LinearFunctionInst:
+  case SILInstructionKind::LinearFunctionExtractInst:
+  case SILInstructionKind::DifferentiabilityWitnessFunctionInst:
+  case SILInstructionKind::BeginCOWMutationInst:
+  case SILInstructionKind::EndCOWMutationInst:
+  case SILInstructionKind::GetAsyncContinuationInst:
+  case SILInstructionKind::GetAsyncContinuationAddrInst:
+  case SILInstructionKind::AwaitAsyncContinuationInst:
+  case SILInstructionKind::HopToExecutorInst:
     // Handle by operand and result check.
     break;
 
@@ -420,7 +432,7 @@ class SerializeSILPass : public SILModuleTransform {
     }
 
     for (auto &VT : M.getVTables()) {
-      VT.setSerialized(IsNotSerialized);
+      VT->setSerialized(IsNotSerialized);
     }
   }
 
@@ -439,21 +451,9 @@ public:
         !M.getOptions().CrossModuleOptimization)
       return;
 
-    // Mark all reachable functions as "anchors" so that they are not
-    // removed later by the dead function elimination pass. This
-    // is required, because clients may reference any of the
-    // serialized functions or anything referenced from them. Therefore,
-    // to avoid linker errors, the object file of the current module should
-    // contain all the symbols which were alive at the time of serialization.
     LLVM_DEBUG(llvm::dbgs() << "Serializing SILModule in SerializeSILPass\n");
     M.serialize();
 
-    // If we are not optimizing, do not strip the [serialized] flag. We *could*
-    // do this since after serializing [serialized] is irrelevent. But this
-    // would incur an unnecessary compile time cost since if we are not
-    // optimizing we are not going to perform any sort of DFE.
-    if (!getOptions().shouldOptimize())
-      return;
     removeSerializedFlagFromAllFunctions(M);
   }
 };

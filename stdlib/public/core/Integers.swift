@@ -1,8 +1,8 @@
-//===--- Integers.swift.gyb -----------------------------------*- swift -*-===//
+//===--- Integers.swift ---------------------------------------------------===//
 //
 // This source file is part of the Swift.org open source project
 //
-// Copyright (c) 2014 - 2018 Apple Inc. and the Swift project authors
+// Copyright (c) 2014 - 2020 Apple Inc. and the Swift project authors
 // Licensed under Apache License v2.0 with Runtime Library Exception
 //
 // See https://swift.org/LICENSE.txt for license information
@@ -58,9 +58,7 @@ extension ExpressibleByIntegerLiteral
 /// =============================================
 ///
 /// To add `AdditiveArithmetic` protocol conformance to your own custom type,
-/// implement the required operators, and provide a static `zero` property
-/// using a type that can represent the magnitude of any value of your custom
-/// type.
+/// implement the required operators, and provide a static `zero` property.
 public protocol AdditiveArithmetic: Equatable {
   /// The zero value.
   ///
@@ -696,7 +694,7 @@ public protocol BinaryInteger :
   /// A type that represents the words of a binary integer.
   ///
   /// The `Words` type must conform to the `RandomAccessCollection` protocol
-  /// with an `Element` type of `UInt` and `Index` type of `Int.
+  /// with an `Element` type of `UInt` and `Index` type of `Int`.
   associatedtype Words: RandomAccessCollection
       where Words.Element == UInt, Words.Index == Int
 
@@ -1211,7 +1209,7 @@ public protocol BinaryInteger :
   ///
   /// - Parameter rhs: The value to divide this value by.
   /// - Returns: A tuple containing the quotient and remainder of this value
-  ///   divided by `rhs`. The remainder has the same sign as `rhs`.
+  ///   divided by `rhs`. The remainder has the same sign as `lhs`.
   func quotientAndRemainder(dividingBy rhs: Self)
     -> (quotient: Self, remainder: Self)
 
@@ -1557,6 +1555,7 @@ extension BinaryInteger {
   }
 
   /// A textual representation of this value.
+  @_semantics("binaryInteger.description")
   public var description: String {
     return _description(radix: 10, uppercase: false)
   }
@@ -2732,11 +2731,6 @@ extension FixedWidthInteger {
     in range: ClosedRange<Self>,
     using generator: inout T
   ) -> Self {
-    _precondition(
-      !range.isEmpty,
-      "Can't get random value with an empty range"
-    )
-
     // Compute delta, the distance between the lower and upper bounds. This
     // value may not representable by the type Bound if Bound is signed, but
     // is always representable as Bound.Magnitude.
@@ -2746,7 +2740,7 @@ extension FixedWidthInteger {
     // If we used &+ instead, the result would be zero, which isn't helpful,
     // so we actually need to handle this case separately.
     if delta == Magnitude.max {
-      return Self(truncatingIfNeeded: generator.next())
+      return Self(truncatingIfNeeded: generator.next() as Magnitude)
     }
     // Need to widen delta to account for the right-endpoint of a closed range.
     delta += 1
@@ -3014,9 +3008,10 @@ extension FixedWidthInteger {
     let minBitWidth = source.significandWidth
     let isExact = (minBitWidth <= exponent)
     let bitPattern = source.significandBitPattern
-    // `RawSignificand.bitWidth` is not available if `RawSignificand` does not
-    // conform to `FixedWidthInteger`; we can compute this value as follows if
-    // `source` is finite:
+    // Determine the actual number of fractional significand bits.
+    // `Source.significandBitCount` would not reflect the actual number of
+    // fractional significand bits if `Source` is not a fixed-width floating-point
+    // type; we can compute this value as follows if `source` is finite:
     let bitWidth = minBitWidth &+ bitPattern.trailingZeroBitCount
     let shift = exponent - Source.Exponent(bitWidth)
     // Use `Self.Magnitude` to prevent sign extension if `shift < 0`.
@@ -3163,20 +3158,25 @@ extension FixedWidthInteger {
       self = Self(_truncatingBits: source._lowWord)
     }
     else {
-      let neg = source < (0 as T)
-      var result: Self = neg ? ~0 : 0
-      var shift: Self = 0
-      let width = Self(_truncatingBits: Self.bitWidth._lowWord)
-      for word in source.words {
-        guard shift < width else { break }
-        // Masking shift is OK here because we have already ensured
-        // that shift < Self.bitWidth. Not masking results in
-        // infinite recursion.
-        result ^= Self(_truncatingBits: neg ? ~word : word) &<< shift
-        shift += Self(_truncatingBits: Int.bitWidth._lowWord)
-      }
-      self = result
+      self = Self._truncatingInit(source)
     }
+  }
+
+  @_alwaysEmitIntoClient
+  internal static func _truncatingInit<T: BinaryInteger>(_ source: T) -> Self {
+    let neg = source < (0 as T)
+    var result: Self = neg ? ~0 : 0
+    var shift: Self = 0
+    let width = Self(_truncatingBits: Self.bitWidth._lowWord)
+    for word in source.words {
+      guard shift < width else { break }
+      // Masking shift is OK here because we have already ensured
+      // that shift < Self.bitWidth. Not masking results in
+      // infinite recursion.
+      result ^= Self(_truncatingBits: neg ? ~word : word) &<< shift
+      shift += Self(_truncatingBits: Int.bitWidth._lowWord)
+    }
+    return result
   }
 
   @_transparent
@@ -3618,24 +3618,11 @@ extension SignedInteger where Self: FixedWidthInteger {
 /// Returns the given integer as the equivalent value in a different integer
 /// type.
 ///
-/// The `numericCast(_:)` function traps on overflow in `-O` and `-Onone`
-/// builds.
+/// Calling the `numericCast(_:)` function is equivalent to calling an
+/// initializer for the destination type. `numericCast(_:)` traps on overflow 
+/// in `-O` and `-Onone` builds.
 ///
-/// You can use `numericCast(_:)` to convert a value when the destination type
-/// can be inferred from the context. In the following example, the
-/// `random(in:)` function uses `numericCast(_:)` twice to convert the
-/// argument and return value of the `arc4random_uniform(_:)` function to the
-/// appropriate type.
-///
-///     func random(in range: Range<Int>) -> Int {
-///         return numericCast(arc4random_uniform(numericCast(range.count)))
-///             + range.lowerBound
-///     }
-///
-///     let number = random(in: -10...<10)
-///     // number == -3, perhaps
-///
-/// - Parameter x: The integer to convert, and instance of type `T`.
+/// - Parameter x: The integer to convert, an instance of type `T`.
 /// - Returns: The value of `x` converted to type `U`.
 @inlinable
 public func numericCast<T: BinaryInteger, U: BinaryInteger>(_ x: T) -> U {

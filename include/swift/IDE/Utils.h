@@ -48,6 +48,7 @@ namespace swift {
   class Type;
   class Decl;
   class DeclContext;
+  class CallExpr;
   class ClangNode;
   class ClangImporter;
   class Token;
@@ -80,6 +81,14 @@ SourceCompleteResult
 isSourceInputComplete(std::unique_ptr<llvm::MemoryBuffer> MemBuf, SourceFileKind SFKind);
 SourceCompleteResult isSourceInputComplete(StringRef Text, SourceFileKind SFKind);
 
+bool initCompilerInvocation(
+    CompilerInvocation &Invocation, ArrayRef<const char *> OrigArgs,
+    DiagnosticEngine &Diags, StringRef UnresolvedPrimaryFile,
+    llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> FileSystem,
+    const std::string &runtimeResourcePath,
+    const std::string &diagnosticDocumentationPath,
+    bool shouldOptimizeForIDE, time_t sessionTimestamp, std::string &Error);
+
 bool initInvocationByClangArguments(ArrayRef<const char *> ArgList,
                                     CompilerInvocation &Invok,
                                     std::string &Error);
@@ -91,10 +100,6 @@ void walkOverriddenDecls(const ValueDecl *VD,
                              const ValueDecl*, const clang::NamedDecl*>)> Fn);
 
 void collectModuleNames(StringRef SDKPath, std::vector<std::string> &Modules);
-
-std::string getSDKName(StringRef Path);
-
-std::string getSDKVersion(StringRef Path);
 
 struct PlaceholderOccurrence {
   /// The complete placeholder string.
@@ -147,7 +152,7 @@ enum class CursorInfoKind {
 
 struct ResolvedCursorInfo {
   CursorInfoKind Kind = CursorInfoKind::Invalid;
-  SourceFile *SF;
+  SourceFile *SF = nullptr;
   SourceLoc Loc;
   ValueDecl *ValueD = nullptr;
   TypeDecl *CtorTyRef = nullptr;
@@ -156,13 +161,19 @@ struct ResolvedCursorInfo {
   bool IsRef = true;
   bool IsKeywordArgument = false;
   Type Ty;
-  DeclContext *DC = nullptr;
   Type ContainerType;
   Stmt *TrailingStmt = nullptr;
   Expr *TrailingExpr = nullptr;
+  /// If this is a call, whether it is "dynamic", see ide::isDynamicCall.
+  bool IsDynamic = false;
+  /// If this is a call, the types of the base (multiple in the case of
+  /// protocol composition).
+  SmallVector<NominalTypeDecl *, 1> ReceiverTypes;
 
   ResolvedCursorInfo() = default;
   ResolvedCursorInfo(SourceFile *SF) : SF(SF) {}
+
+  ValueDecl *typeOrValue() { return CtorTyRef ? CtorTyRef : ValueD; }
 
   friend bool operator==(const ResolvedCursorInfo &lhs,
                          const ResolvedCursorInfo &rhs) {
@@ -170,19 +181,15 @@ struct ResolvedCursorInfo {
       lhs.Loc.getOpaquePointerValue() == rhs.Loc.getOpaquePointerValue();
   }
 
-  void setValueRef(ValueDecl *ValueD,
-                   TypeDecl *CtorTyRef,
-                   ExtensionDecl *ExtTyRef,
-                   bool IsRef,
-                   Type Ty,
-                   Type ContainerType) {
+  void setValueRef(ValueDecl *ValueD, TypeDecl *CtorTyRef,
+                   ExtensionDecl *ExtTyRef, bool IsRef,
+                   Type Ty, Type ContainerType) {
     Kind = CursorInfoKind::ValueRef;
     this->ValueD = ValueD;
     this->CtorTyRef = CtorTyRef;
     this->ExtTyRef = ExtTyRef;
     this->IsRef = IsRef;
     this->Ty = Ty;
-    this->DC = ValueD->getDeclContext();
     this->ContainerType = ContainerType;
   }
   void setModuleRef(ModuleEntity Mod) {
@@ -221,9 +228,16 @@ struct ResolvedLoc {
   ASTWalker::ParentTy Node;
   CharSourceRange Range;
   std::vector<CharSourceRange> LabelRanges;
+  Optional<unsigned> FirstTrailingLabel;
   LabelRangeType LabelType;
   bool IsActive;
   bool IsInSelector;
+};
+
+/// Used by NameMatcher to track parent CallExprs when walking a checked AST.
+struct CallingParent {
+  Expr *ApplicableTo;
+  CallExpr *Call;
 };
 
 
@@ -240,9 +254,12 @@ class NameMatcher: public ASTWalker {
 
   /// The \c Expr argument of a parent \c CustomAttr (if one exists) and
   /// the \c SourceLoc of the type name it applies to.
-  llvm::Optional<std::pair<SourceLoc, Expr *>> CustomAttrArg;
+  llvm::Optional<Located<Expr *>> CustomAttrArg;
   unsigned InactiveConfigRegionNestings = 0;
   unsigned SelectorNestings = 0;
+
+  /// The stack of parent CallExprs and the innermost expression they apply to.
+  std::vector<CallingParent> ParentCalls;
 
   SourceManager &getSourceMgr() const;
 
@@ -256,11 +273,12 @@ class NameMatcher: public ASTWalker {
   bool shouldSkip(SourceRange Range);
   bool shouldSkip(CharSourceRange Range);
   bool tryResolve(ASTWalker::ParentTy Node, SourceLoc NameLoc);
-  bool tryResolve(ASTWalker::ParentTy Node, DeclNameLoc NameLoc, Expr *Arg,
-                  bool checkParentForLabels = false);
+  bool tryResolve(ASTWalker::ParentTy Node, DeclNameLoc NameLoc, Expr *Arg);
   bool tryResolve(ASTWalker::ParentTy Node, SourceLoc NameLoc, LabelRangeType RangeType,
-                  ArrayRef<CharSourceRange> LabelLocs);
+                  ArrayRef<CharSourceRange> LabelLocs,
+                  Optional<unsigned> FirstTrailingLabel);
   bool handleCustomAttrs(Decl *D);
+  Expr *getApplicableArgFor(Expr* E);
 
   std::pair<bool, Expr*> walkToExprPre(Expr *E) override;
   Expr* walkToExprPost(Expr *E) override;
@@ -268,8 +286,6 @@ class NameMatcher: public ASTWalker {
   bool walkToDeclPost(Decl *D) override;
   std::pair<bool, Stmt*> walkToStmtPre(Stmt *S) override;
   Stmt* walkToStmtPost(Stmt *S) override;
-  bool walkToTypeLocPre(TypeLoc &TL) override;
-  bool walkToTypeLocPost(TypeLoc &TL) override;
   bool walkToTypeReprPre(TypeRepr *T) override;
   bool walkToTypeReprPost(TypeRepr *T) override;
   std::pair<bool, Pattern*> walkToPatternPre(Pattern *P) override;
@@ -281,6 +297,7 @@ class NameMatcher: public ASTWalker {
 public:
   explicit NameMatcher(SourceFile &SrcFile) : SrcFile(SrcFile) { }
   std::vector<ResolvedLoc> resolve(ArrayRef<UnresolvedLoc> Locs, ArrayRef<Token> Tokens);
+  ResolvedLoc resolve(UnresolvedLoc Loc);
 };
 
 enum class RangeKind : int8_t {
@@ -412,43 +429,6 @@ public:
   bool isFunction() const { return HasParen; }
 };
 
-/// This provide a utility for writing to an underlying string buffer multiple
-/// string pieces and retrieve them later when the underlying buffer is stable.
-class DelayedStringRetriever : public raw_ostream {
-    SmallVectorImpl<char> &OS;
-    llvm::raw_svector_ostream Underlying;
-    SmallVector<std::pair<unsigned, unsigned>, 4> StartEnds;
-    unsigned CurrentStart;
-
-public:
-    explicit DelayedStringRetriever(SmallVectorImpl<char> &OS) : OS(OS),
-                                                              Underlying(OS) {}
-    void startPiece() {
-      CurrentStart = OS.size();
-    }
-    void endPiece() {
-      StartEnds.emplace_back(CurrentStart, OS.size());
-    }
-    void write_impl(const char *ptr, size_t size) override {
-      Underlying.write(ptr, size);
-    }
-    uint64_t current_pos() const override {
-      return Underlying.tell();
-    }
-    size_t preferred_buffer_size() const override {
-      return 0;
-    }
-    void retrieve(llvm::function_ref<void(StringRef)> F) const {
-      for (auto P : StartEnds) {
-        F(StringRef(OS.begin() + P.first, P.second - P.first));
-      }
-    }
-    StringRef operator[](unsigned I) const {
-      auto P = StartEnds[I];
-      return StringRef(OS.begin() + P.first, P.second - P.first);
-    }
-};
-
 enum class RegionType {
   Unmatched,
   Mismatch,
@@ -534,6 +514,7 @@ public:
   }
 };
 
+/// Outputs replacements as JSON, see `writeEditsInJson`
 class SourceEditJsonConsumer : public SourceEditConsumer {
   struct Implementation;
   Implementation &Impl;
@@ -543,6 +524,24 @@ public:
   void accept(SourceManager &SM, RegionType RegionType, ArrayRef<Replacement> Replacements) override;
 };
 
+/// Outputs replacements to `OS` in the form
+/// ```
+/// // </path/to/file> startLine:startCol -> endLine:endCol
+/// replacement
+/// text
+///
+/// ```
+class SourceEditTextConsumer : public SourceEditConsumer {
+  llvm::raw_ostream &OS;
+
+public:
+  SourceEditTextConsumer(llvm::raw_ostream &OS);
+
+  void accept(SourceManager &SM, RegionType RegionType,
+              ArrayRef<Replacement> Replacements) override;
+};
+
+/// Outputs the rewritten buffer to `OS` with RUN and CHECK lines removed
 class SourceEditOutputConsumer : public SourceEditConsumer {
   struct Implementation;
   Implementation &Impl;
@@ -568,10 +567,10 @@ struct CallArgInfo {
 std::vector<CallArgInfo>
 getCallArgInfo(SourceManager &SM, Expr *Arg, LabelRangeEndAt EndKind);
 
-// Get the ranges of argument labels from an Arg, either tuple or paren.
-// This includes empty ranges for any unlabelled arguments, and excludes
-// trailing closures.
-std::vector<CharSourceRange>
+// Get the ranges of argument labels from an Arg, either tuple or paren, and
+// the index of the first trailing closure argument, if any. This includes empty
+// ranges for any unlabelled arguments, including the first trailing closure.
+std::pair<std::vector<CharSourceRange>, Optional<unsigned>>
 getCallArgLabelRanges(SourceManager &SM, Expr *Arg, LabelRangeEndAt EndKind);
 
 /// Whether a decl is defined from clang source.
@@ -588,6 +587,23 @@ ClangNode extensionGetClangNode(const ExtensionDecl *ext);
 /// include a second level of function application for a 'self.' expression,
 /// or a curry thunk, etc.
 std::pair<Type, ConcreteDeclRef> getReferencedDecl(Expr *expr);
+
+/// Whether the last expression in \p ExprStack is being called.
+bool isBeingCalled(ArrayRef<Expr*> ExprStack);
+
+/// The base of the last expression in \p ExprStack (which may look up the
+/// stack in eg. the case of a `DotSyntaxCallExpr`).
+Expr *getBase(ArrayRef<Expr *> ExprStack);
+
+/// Assuming that we have a call, returns whether or not it is "dynamic" based
+/// on its base expression and decl of the callee. Note that this is not
+/// Swift's "dynamic" modifier (`ValueDecl::isDynamic`), but rathar "can call a
+/// function in a conformance/subclass".
+bool isDynamicCall(Expr *Base, ValueDecl *D);
+
+/// Adds the resolved nominal types of \p Base to \p Types.
+void getReceiverType(Expr *Base,
+                     SmallVectorImpl<NominalTypeDecl *> &Types);
 
 } // namespace ide
 } // namespace swift

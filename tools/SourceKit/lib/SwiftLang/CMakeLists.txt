@@ -33,7 +33,6 @@ target_link_libraries(SourceKitSwiftLang PRIVATE
   swiftAST
   swiftMarkup
   swiftParse
-  swiftParseSIL
   swiftSIL
   swiftSILGen
   swiftSILOptimizer
@@ -43,6 +42,7 @@ target_link_libraries(SourceKitSwiftLang PRIVATE
   swiftSerialization
   swiftSyntax
   swiftOption
+  swiftSymbolGraphGen
   libcmark_static
   # Clang dependencies.
   clangIndex

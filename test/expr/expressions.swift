@@ -21,9 +21,9 @@ func1()
 _ = 4+7
 
 var bind_test1 : () -> () = func1
-var bind_test2 : Int = 4; func1 // expected-error {{expression resolves to an unused variable}}
+var bind_test2 : Int = 4; func1 // expected-warning {{variable is unused}}
 
-(func1, func2) // expected-error {{expression resolves to an unused variable}}
+(func1, func2) // expected-warning {{variable is unused}}
 
 func basictest() {
   // Simple integer variables.
@@ -36,7 +36,7 @@ func basictest() {
 
   var x4 : Bool = true
   var x5 : Bool =
-        4 // expected-error {{cannot convert value of type 'Int' to specified type 'Bool'}}
+        4 // expected-error {{type 'Int' cannot be used as a boolean; test for '!= 0' instead}}
 
   //var x6 : Float = 4+5
 
@@ -162,7 +162,7 @@ func errorRecovery() {
 }
 
 func acceptsInt(_ x: Int) {}
-acceptsInt(unknown_var) // expected-error {{use of unresolved identifier 'unknown_var'}}
+acceptsInt(unknown_var) // expected-error {{cannot find 'unknown_var' in scope}}
 
 
 
@@ -173,7 +173,7 @@ var test1d = { { { 42 } } }
 
 func test2(_ a: Int, b: Int) -> (c: Int) { // expected-error{{cannot create a single-element tuple with an element label}} {{34-37=}} expected-note {{did you mean 'a'?}} expected-note {{did you mean 'b'?}}
  _ = a+b
- a+b+c // expected-error{{use of unresolved identifier 'c'}}
+ a+b+c // expected-error{{cannot find 'c' in scope}}
  return a+b
 }
 
@@ -193,7 +193,7 @@ func test5() {
 
 
   let c: (a: Int, b: Int) = (1,2)
-  let _: (b: Int, a: Int) = c  // Ok, reshuffle tuple.
+  let _: (b: Int, a: Int) = c  // expected-warning {{expression shuffles the elements of this tuple; this behavior is deprecated}}
 }
 
 
@@ -246,15 +246,16 @@ func test_as_2() {
 func test_lambda() {
   // A simple closure.
   var a = { (value: Int) -> () in markUsed(value+1) }
+  // expected-warning@-1 {{initialization of variable 'a' was never used; consider replacing with assignment to '_' or removing it}}
 
   // A recursive lambda.
-  // FIXME: This should definitely be accepted.
   var fib = { (n: Int) -> Int in
+    // expected-warning@-1 {{variable 'fib' was never mutated; consider changing to 'let' constant}}
     if (n < 2) {
       return n
     }
     
-    return fib(n-1)+fib(n-2) // expected-error 2 {{variable used within its own initial value}}
+    return fib(n-1)+fib(n-2)
   }
 }
 
@@ -277,6 +278,7 @@ func test_floating_point() {
 func test_nonassoc(_ x: Int, y: Int) -> Bool {
   // FIXME: the second error and note here should arguably disappear
   return x == y == x // expected-error {{adjacent operators are in non-associative precedence group 'ComparisonPrecedence'}}  expected-error {{binary operator '==' cannot be applied to operands of type 'Bool' and 'Int'}}
+  // expected-note@-1 {{overloads for '==' exist with these partially matching parameter lists: (Bool, Bool), (Int, Int)}}
 }
 
 // More realistic examples.
@@ -295,7 +297,7 @@ func fib(_ n: Int) -> Int {
 
 // FIXME: Should warn about integer constants being too large <rdar://problem/14070127>
 var
-   il_a: Bool = 4  // expected-error {{cannot convert value of type 'Int' to specified type 'Bool'}}
+   il_a: Bool = 4  // expected-error {{type 'Int' cannot be used as a boolean; test for '!= 0' instead}}
 var il_b: Int8
    = 123123
 var il_c: Int8 = 4  // ok
@@ -709,11 +711,10 @@ func unusedExpressionResults() {
   // Unused l-value
   _ // expected-error{{'_' can only appear in a pattern or on the left side of an assignment}}
 
-
   // <rdar://problem/20749592> Conditional Optional binding hides compiler error
   let optionalc:C? = nil
   optionalc?.method()  // ok
-  optionalc?.method  // expected-error {{expression resolves to an unused function}}
+  optionalc?.method  // expected-error {{function is unused}}
 }
 
 
@@ -748,10 +749,13 @@ func invalidDictionaryLiteral() {
 }
 
 
-[4].joined(separator: [1]) // expected-error {{cannot convert value of type 'Int' to expected element type 'String'}}
-// expected-error@-1 {{cannot convert value of type '[Int]' to expected argument type 'String'}}
-[4].joined(separator: [[[1]]]) // expected-error {{cannot convert value of type 'Int' to expected element type 'String'}}
-// expected-error@-1 {{cannot convert value of type '[[[Int]]]' to expected argument type 'String'}}
+[4].joined(separator: [1])
+// expected-error@-1 {{cannot convert value of type 'Int' to expected element type 'String'}}
+// expected-error@-2 {{cannot convert value of type '[Int]' to expected argument type 'String'}}
+
+[4].joined(separator: [[[1]]])
+// expected-error@-1 {{cannot convert value of type 'Int' to expected element type 'String'}}
+// expected-error@-2 {{cannot convert value of type '[[[Int]]]' to expected argument type 'String'}}
 
 //===----------------------------------------------------------------------===//
 // nil/metatype comparisons
@@ -778,7 +782,8 @@ func testNilCoalescePrecedence(cond: Bool, a: Int?, r: ClosedRange<Int>?) {
   // ?? should have higher precedence than logical operators like || and comparisons.
   if cond || (a ?? 42 > 0) {}  // Ok.
   if (cond || a) ?? 42 > 0 {}  // expected-error {{cannot be used as a boolean}} {{15-15=(}} {{16-16= != nil)}}
-  // expected-error@-1:12 {{cannot convert value of type 'Bool' to expected argument type 'Int?'}}
+  // expected-error@-1 {{binary operator '>' cannot be applied to operands of type 'Bool' and 'Int'}}  expected-note@-1 {{overloads for '>' exist with these partially matching parameter list}}
+  // expected-error@-2 {{binary operator '??' cannot be applied to operands of type 'Bool' and 'Int'}}
   if (cond || a) ?? (42 > 0) {}  // expected-error {{cannot be used as a boolean}} {{15-15=(}} {{16-16= != nil)}}
 
   if cond || a ?? 42 > 0 {}    // Parses as the first one, not the others.
@@ -786,8 +791,7 @@ func testNilCoalescePrecedence(cond: Bool, a: Int?, r: ClosedRange<Int>?) {
 
   // ?? should have lower precedence than range and arithmetic operators.
   let r1 = r ?? (0...42) // ok
-  let r2 = (r ?? 0)...42 // not ok: expected-error 2 {{cannot convert value of type 'Int' to expected argument type 'ClosedRange<Int>'}}
-  // expected-error@-1 {{referencing operator function '...' on 'Comparable' requires that 'ClosedRange<Int>' conform to 'Comparable'}}
+  let r2 = (r ?? 0)...42 // not ok: expected-error {{binary operator '??' cannot be applied to operands of type 'ClosedRange<Int>?' and 'Int'}}
   let r3 = r ?? 0...42 // parses as the first one, not the second.
   
   
@@ -806,13 +810,13 @@ func testParenExprInTheWay() {
   let x = 42
   
   if x & 4.0 {}  // expected-error {{cannot convert value of type 'Double' to expected argument type 'Int'}}
-  // expected-error@-1 {{cannot convert value of type 'Int' to expected condition type 'Bool'}}
+  // expected-error@-1 {{type 'Int' cannot be used as a boolean; test for '!= 0' instead}}
   if (x & 4.0) {}   // expected-error {{cannot convert value of type 'Double' to expected argument type 'Int'}}
-  // expected-error@-1 {{cannot convert value of type 'Int' to expected condition type 'Bool'}}
+  // expected-error@-1 {{type 'Int' cannot be used as a boolean; test for '!= 0' instead}}
   if !(x & 4.0) {}  // expected-error {{cannot convert value of type 'Double' to expected argument type 'Int'}}
-  // expected-error@-1 {{cannot convert value of type 'Int' to expected argument type 'Bool'}}
+  // expected-error@-1 {{type 'Int' cannot be used as a boolean; test for '!= 0' instead}}
 
-  if x & x {} // expected-error {{cannot convert value of type 'Int' to expected condition type 'Bool'}}
+  if x & x {} // expected-error {{type 'Int' cannot be used as a boolean; test for '!= 0' instead}}
 }
 
 // <rdar://problem/21352576> Mixed method/property overload groups can cause a crash during constraint optimization
@@ -837,7 +841,7 @@ func inoutTests(_ arr: inout Int) {
 
   inoutTests((&x, 24).0) // expected-error {{use of extraneous '&'}}
 
-  inoutTests((&x)) // expected-error {{use of extraneous '&'}}
+  inoutTests((&x)) // expected-error {{use of extraneous '&'}} {{15-16=(}} {{14-15=&}}
   inoutTests(&x)
   
   // <rdar://problem/17489894> inout not rejected as operand to assignment operator

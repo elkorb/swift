@@ -48,7 +48,7 @@ namespace {
       }
       
       void setAnonymousContextDiscriminator(StringRef discriminator) {
-        AnonymousContextDiscriminator = discriminator;
+        AnonymousContextDiscriminator = discriminator.str();
       }
       
       std::string takeAnonymousContextDiscriminator() {
@@ -363,7 +363,13 @@ void Remangler::mangleGenericSpecialization(Node *node) {
   unreachable("unsupported");
 }
 
+void Remangler::mangleGenericSpecializationPrespecialized(Node *node) {
+  unreachable("unsupported");
+}
 void Remangler::mangleGenericSpecializationNotReAbstracted(Node *node) {
+  unreachable("unsupported");
+}
+void Remangler::mangleGenericSpecializationInResilienceDomain(Node *node) {
   unreachable("unsupported");
 }
 
@@ -600,6 +606,13 @@ void Remangler::mangleDynamicallyReplaceableFunctionVar(Node *node) {
   Buffer << "TX";
 }
 
+void Remangler::mangleAsyncAwaitResumePartialFunction(Node *node) {
+  unreachable("unsupported");
+}
+void Remangler::mangleAsyncSuspendResumePartialFunction(Node *node) {
+  unreachable("unsupported");
+}
+
 void Remangler::mangleDirectness(Node *node) {
   auto getChar = [](Directness d) -> char {
     switch (d) {
@@ -627,8 +640,20 @@ void Remangler::mangleValueWitnessTable(Node *node) {
   mangleSingleChildNode(node); // type
 }
 
+void Remangler::mangleConcurrentFunctionType(Node *node) {
+  Buffer << "y";
+}
+
+void Remangler::mangleAsyncAnnotation(Node *node) {
+  Buffer << "Z";
+}
+
 void Remangler::mangleThrowsAnnotation(Node *node) {
   Buffer << "z";
+}
+
+void Remangler::mangleDifferentiableFunctionType(Node *node) {
+  Buffer << "D" << (char)node->getIndex(); // differentiability kind
 }
 
 void Remangler::mangleFieldOffset(Node *node) {
@@ -730,6 +755,34 @@ void Remangler::mangleReabstractionThunk(Node *node) {
   Buffer << "<reabstraction-thunk>";
 }
 
+void Remangler::mangleAutoDiffFunction(Node *node, EntityContext &ctx) {
+  Buffer << "<autodiff-function>";
+}
+
+void Remangler::mangleAutoDiffDerivativeVTableThunk(Node *node) {
+  Buffer << "<autodiff-derivative-vtable-thunk>";
+}
+
+void Remangler::mangleAutoDiffSelfReorderingReabstractionThunk(Node *node) {
+  Buffer << "<autodiff-self-reordering-reabstraction-thunk>";
+}
+
+void Remangler::mangleAutoDiffSubsetParametersThunk(Node *node) {
+  Buffer << "<autodiff-subset-parameters-thunk>";
+}
+
+void Remangler::mangleAutoDiffFunctionKind(Node *node) {
+  Buffer << "<autodiff-function-kind>";
+}
+
+void Remangler::mangleDifferentiabilityWitness(Node *node) {
+  Buffer << "<differentiability-witness>";
+}
+
+void Remangler::mangleIndexSubset(Node *node) {
+  Buffer << "<index-subset>";
+}
+
 void Remangler::mangleProtocolSelfConformanceWitness(Node *node) {
   Buffer << "TS";
   mangleSingleChildNode(node); // entity
@@ -801,9 +854,18 @@ void Remangler::manglePropertyWrapperBackingInitializer(Node *node,
   mangleSimpleEntity(node, 'I', "P", ctx);
 }
 
+void Remangler::manglePropertyWrapperInitFromProjectedValue(Node *node,
+                                                            EntityContext &ctx) {
+  mangleSimpleEntity(node, 'I', "W", ctx);
+}
+
 void Remangler::mangleDefaultArgumentInitializer(Node *node,
                                                  EntityContext &ctx) {
   mangleNamedEntity(node, 'I', "A", ctx);
+}
+
+void Remangler::mangleAsyncFunctionPointer(Node *node) {
+  Buffer << "Tu";
 }
 
 void Remangler::mangleDeallocator(Node *node, EntityContext &ctx) {
@@ -1181,7 +1243,7 @@ void Remangler::mangleImplFunctionType(Node *node) {
   auto i = node->begin(), e = node->end();
   if (i != e && (*i)->getKind() == Node::Kind::ImplConvention) {
     StringRef text = (*i)->getText();
-    i++;
+    ++i;
     if (text == "@callee_unowned") {
       Buffer << 'd';
     } else if (text == "@callee_guaranteed") {
@@ -1204,7 +1266,7 @@ void Remangler::mangleImplFunctionType(Node *node) {
     Buffer << ((*i)->getKind() == Node::Kind::DependentGenericSignature
               ? 'G' : 'g');
     mangleDependentGenericSignature((*i));
-    i++;
+    ++i;
   }
   Buffer << '_';
   for (; i != e && (*i)->getKind() == Node::Kind::ImplParameter; ++i) {
@@ -1217,20 +1279,41 @@ void Remangler::mangleImplFunctionType(Node *node) {
 
 void Remangler::mangleImplFunctionAttribute(Node *node) {
   StringRef text = node->getText();
-  if (text == "@convention(block)") {
-    Buffer << "Cb";
-  } else if (text == "@convention(c)") {
-    Buffer << "Cc";
-  } else if (text == "@convention(method)") {
-    Buffer << "Cm";
-  } else if (text == "@convention(objc_method)") {
-    Buffer << "CO";
-  } else if (text == "@convention(witness_method)") {
-    Buffer << "Cw";
+  if (text == "@yield_once") {
+    Buffer << "A";
+  } else if (text == "@yield_many") {
+    Buffer << "G";
+  } else if (text == "@Sendable") {
+    Buffer << "h";
+  } else if (text == "@async") {
+    Buffer << "H";
   } else {
     unreachable("bad impl-function-attribute");
   }
 }
+
+void Remangler::mangleImplFunctionConvention(Node *node) {
+  mangle(node->getChild(0));
+}
+
+void Remangler::mangleImplFunctionConventionName(Node *node) {
+  StringRef text = node->getText();
+  if (text == "block") {
+    Buffer << "Cb";
+  } else if (text == "c") {
+    Buffer << "Cc";
+  } else if (text == "method") {
+    Buffer << "Cm";
+  } else if (text == "objc_method") {
+    Buffer << "CO";
+  } else if (text == "witness_method") {
+    Buffer << "Cw";
+  } else {
+    unreachable("bad impl-function-convention-name");
+  }
+}
+
+void Remangler::mangleClangType(Node *node) { unreachable("unsupported"); }
 
 void Remangler::mangleImplParameter(Node *node) {
   assert(node->getNumChildren() == 2);
@@ -1248,15 +1331,26 @@ void Remangler::mangleImplResult(Node *node) {
   mangleChildNodes(node); // impl convention, type
 }
 
+void Remangler::mangleImplYield(Node *node) {
+  assert(node->getNumChildren() == 2);
+  Buffer << 'Y';
+  mangleChildNodes(node); // impl convention, type
+}
+
+void Remangler::mangleImplDifferentiabilityKind(Node *node) {
+  // TODO(TF-750): Check if this code path actually triggers and add a test.
+  Buffer << (char)node->getIndex();
+}
+
 void Remangler::mangleImplEscaping(Node *node) {
   // The old mangler does not encode escaping.
 }
 
-void Remangler::mangleImplSubstitutions(Node *node) {
+void Remangler::mangleImplPatternSubstitutions(Node *node) {
   // The old mangler does not encode substituted function types.
 }
 
-void Remangler::mangleImplImpliedSubstitutions(Node *node) {
+void Remangler::mangleImplInvocationSubstitutions(Node *node) {
   // The old mangler does not encode substituted function types.
 }
 
@@ -1284,6 +1378,19 @@ void Remangler::mangleImplConvention(Node *node) {
   } else {
     unreachable("invalid impl convention");
   }
+}
+
+void Remangler::mangleImplParameterResultDifferentiability(Node *node) {
+  assert(node->getKind() == Node::Kind::ImplDifferentiabilityKind);
+  StringRef text = node->getText();
+  // Empty string represents default differentiability.
+  if (text.empty())
+    return;
+  if (text == "@noDerivative") {
+    Buffer << 'w';
+    return;
+  }
+  unreachable("Invalid impl differentiability");
 }
 
 void Remangler::mangleDynamicSelf(Node *node) {
@@ -1375,6 +1482,11 @@ void Remangler::mangleOwned(Node *node) {
 
 void Remangler::mangleInOut(Node *node) {
   Buffer << 'R';
+  mangleSingleChildNode(node); // type
+}
+
+void Remangler::mangleNoDerivative(Node *node) {
+  Buffer << 'k';
   mangleSingleChildNode(node); // type
 }
 
@@ -2053,7 +2165,7 @@ void Remangler::mangleSugaredParen(Node *node) {
 }
 
 void Remangler::mangleOpaqueReturnType(Node *node) {
-  unreachable("unsupported");
+  Buffer << "Qu";
 }
 void Remangler::mangleOpaqueReturnTypeOf(Node *node, EntityContext &ctx) {
   unreachable("unsupported");
@@ -2078,6 +2190,51 @@ void Remangler::mangleOpaqueTypeDescriptorAccessorVar(Node *node) {
 }
 void Remangler::mangleAccessorFunctionReference(Node *node) {
   unreachable("can't remangle");
+}
+void Remangler::mangleMetadataInstantiationCache(Node *node) {
+  unreachable("unsupported");
+}
+void Remangler::mangleGlobalVariableOnceToken(Node *node) {
+  unreachable("unsupported");
+}
+void Remangler::mangleGlobalVariableOnceFunction(Node *node) {
+  unreachable("unsupported");
+}
+void Remangler::mangleGlobalVariableOnceDeclList(Node *node) {
+  unreachable("unsupported");
+}
+void Remangler::manglePredefinedObjCAsyncCompletionHandlerImpl(Node *node) {
+  unreachable("unsupported");
+}
+void Remangler::mangleObjCAsyncCompletionHandlerImpl(Node *node) {
+  unreachable("unsupported");
+}
+
+void Remangler::mangleCanonicalSpecializedGenericMetaclass(Node *node) {
+  mangleSingleChildNode(node); // type
+  Buffer << "MM";
+}
+
+void Remangler::mangleCanonicalSpecializedGenericTypeMetadataAccessFunction(
+    Node *node) {
+  mangleSingleChildNode(node);
+  Buffer << "Mb";
+}
+
+void Remangler::mangleNoncanonicalSpecializedGenericTypeMetadata(Node *node) {
+  mangleSingleChildNode(node);
+  Buffer << "MN";
+}
+
+void Remangler::mangleNoncanonicalSpecializedGenericTypeMetadataCache(Node *node) {
+  mangleSingleChildNode(node);
+  Buffer << "MJ";
+}
+
+void Remangler::mangleCanonicalPrespecializedGenericTypeCachingOnceToken(
+    Node *node) {
+  mangleSingleChildNode(node);
+  Buffer << "Mz";
 }
 
 /// The top-level interface to the remangler.

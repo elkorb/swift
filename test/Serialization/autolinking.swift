@@ -40,10 +40,10 @@ import someModule
 // NO-FORCE-LOAD-NOT: FORCE_LOAD
 // NO-FORCE-LOAD-NOT -lmodule
 // NO-FORCE-LOAD-NOT -lmagic
-// FORCE-LOAD: define{{( dllexport)?}} void @"_swift_FORCE_LOAD_$_module"() {{(comdat )?}}{
+// FORCE-LOAD: define{{( dllexport)?}} void @"_swift_FORCE_LOAD_$_module"() {{(#[0-9]+)?( comdat)?}} {
 // FORCE-LOAD:   ret void
 // FORCE-LOAD: }
-// FORCE-LOAD-HEX: define{{( dllexport)?}} void @"_swift_FORCE_LOAD_$306d6f64756c65"() {{(comdat )?}}{
+// FORCE-LOAD-HEX: define{{( dllexport)?}} void @"_swift_FORCE_LOAD_$306d6f64756c65"() {{(#[0-9]+)?( comdat)?}} {
 // FORCE-LOAD-HEX:   ret void
 // FORCE-LOAD-HEX: }
 
@@ -52,6 +52,6 @@ import someModule
 // FORCE-LOAD-CLIENT: @llvm.used = appending global [{{[0-9]+}} x i8*] [
 // FORCE-LOAD-CLIENT: i8* bitcast (void ()** @"_swift_FORCE_LOAD_$_module_$_autolinking" to i8*)
 // FORCE-LOAD-CLIENT: ], section "llvm.metadata"
-// FORCE-LOAD-CLIENT-MACHO: declare extern_weak {{(dllimport )?}}void @"_swift_FORCE_LOAD_$_module"()
+// FORCE-LOAD-CLIENT-macho: declare extern_weak {{(dllimport )?}}void @"_swift_FORCE_LOAD_$_module"()
 // FORCE-LOAD-CLIENT-COFF: declare extern {{(dllimport )?}}void @"_swift_FORCE_LOAD_$_module"()
 

@@ -89,7 +89,7 @@ func bridgeToObjC(_ s: BridgedStruct) -> BridgedClass {
 }
 
 func bridgeToAnyObject(_ s: BridgedStruct) -> AnyObject {
-  return s // expected-error{{return expression of type 'BridgedStruct' does not conform to 'AnyObject'}}
+  return s // expected-error{{return expression of type 'BridgedStruct' expected to be an instance of a class or class-constrained type}}
   return s as AnyObject
 }
 
@@ -124,16 +124,24 @@ func arrayToNSArray() {
 // NSArray -> Array
 func nsArrayToArray(_ nsa: NSArray) {
   var arr1: [AnyObject] = nsa // expected-error{{'NSArray' is not implicitly convertible to '[AnyObject]'; did you mean to use 'as' to explicitly convert?}} {{30-30= as [AnyObject]}}
-  var _: [BridgedClass] = nsa // expected-error{{'NSArray' is not convertible to '[BridgedClass]'}} {{30-30= as! [BridgedClass]}}
-  var _: [OtherClass] = nsa // expected-error{{'NSArray' is not convertible to '[OtherClass]'}} {{28-28= as! [OtherClass]}}
-  var _: [BridgedStruct] = nsa // expected-error{{'NSArray' is not convertible to '[BridgedStruct]'}} {{31-31= as! [BridgedStruct]}}
-  var _: [NotBridgedStruct] = nsa // expected-error{{use 'as!' to force downcast}}
+  var _: [BridgedClass] = nsa // expected-error{{'NSArray' is not convertible to '[BridgedClass]'}} 
+  // expected-note@-1{{did you mean to use 'as!' to force downcast?}} {{30-30= as! [BridgedClass]}}
+  var _: [OtherClass] = nsa // expected-error{{'NSArray' is not convertible to '[OtherClass]'}} 
+  // expected-note@-1{{did you mean to use 'as!' to force downcast?}} {{28-28= as! [OtherClass]}}
+  var _: [BridgedStruct] = nsa // expected-error{{'NSArray' is not convertible to '[BridgedStruct]'}} 
+  // expected-note@-1{{did you mean to use 'as!' to force downcast?}} {{31-31= as! [BridgedStruct]}}
+  var _: [NotBridgedStruct] = nsa // expected-error{{'NSArray' is not convertible to '[NotBridgedStruct]'}}
+  // expected-note@-1{{did you mean to use 'as!' to force downcast?}} {{34-34= as! [NotBridgedStruct]}}
 
   var _: [AnyObject] = nsa as [AnyObject]
-  var _: [BridgedClass] = nsa as [BridgedClass] // expected-error{{'NSArray' is not convertible to '[BridgedClass]'; did you mean to use 'as!' to force downcast?}} {{31-33=as!}}
-  var _: [OtherClass] = nsa as [OtherClass] // expected-error{{'NSArray' is not convertible to '[OtherClass]'; did you mean to use 'as!' to force downcast?}} {{29-31=as!}}
-  var _: [BridgedStruct] = nsa as [BridgedStruct] // expected-error{{'NSArray' is not convertible to '[BridgedStruct]'; did you mean to use 'as!' to force downcast?}} {{32-34=as!}}
-  var _: [NotBridgedStruct] = nsa as [NotBridgedStruct] // expected-error{{use 'as!' to force downcast}}
+  var _: [BridgedClass] = nsa as [BridgedClass] // expected-error{{'NSArray' is not convertible to '[BridgedClass]'}} 
+  // expected-note@-1{{did you mean to use 'as!' to force downcast?}} {{31-33=as!}}
+  var _: [OtherClass] = nsa as [OtherClass] // expected-error{{'NSArray' is not convertible to '[OtherClass]'}} 
+  // expected-note@-1{{did you mean to use 'as!' to force downcast?}} {{29-31=as!}}
+  var _: [BridgedStruct] = nsa as [BridgedStruct] // expected-error{{'NSArray' is not convertible to '[BridgedStruct]'}} 
+  // expected-note@-1{{did you mean to use 'as!' to force downcast?}} {{32-34=as!}}
+  var _: [NotBridgedStruct] = nsa as [NotBridgedStruct] // expected-error{{'NSArray' is not convertible to '[NotBridgedStruct]'}}
+  // expected-note@-1{{did you mean to use 'as!' to force downcast?}} {{35-37=as!}}
 
   var arr6: Array = nsa as Array
   arr6 = arr1
@@ -180,6 +188,7 @@ func dictionaryToNSDictionary() {
 // In this case, we should not implicitly convert Dictionary to NSDictionary.
 struct NotEquatable {}
 func notEquatableError(_ d: Dictionary<Int, NotEquatable>) -> Bool {
+  // There is a note attached to a requirement `requirement from conditional conformance of 'Dictionary<Int, NotEquatable>' to 'Equatable'`
   return d == d // expected-error{{operator function '==' requires that 'NotEquatable' conform to 'Equatable'}}
 }
 
@@ -210,7 +219,8 @@ func rdar18330319(_ s: String, d: [String : AnyObject]) {
 func rdar19551164a(_ s: String, _ a: [String]) {}
 func rdar19551164b(_ s: NSString, _ a: NSArray) {
   rdar19551164a(s, a) // expected-error{{'NSString' is not implicitly convertible to 'String'; did you mean to use 'as' to explicitly convert?}}{{18-18= as String}}
-  // expected-error@-1{{'NSArray' is not convertible to '[String]'; did you mean to use 'as!' to force downcast?}}{{21-21= as! [String]}}
+  // expected-error@-1{{'NSArray' is not convertible to '[String]'}}
+  // expected-note@-2 {{did you mean to use 'as!' to force downcast?}}{{21-21= as! [String]}}
 }
 
 // rdar://problem/19695671
@@ -265,6 +275,7 @@ func rdar19831698() {
   var v71 = true + 1.0 // expected-error{{binary operator '+' cannot be applied to operands of type 'Bool' and 'Double'}}
 // expected-note@-1{{overloads for '+'}}
   var v72 = true + true // expected-error{{binary operator '+' cannot be applied to two 'Bool' operands}}
+  // expected-note@-1{{overloads for '+'}}
   var v73 = true + [] // expected-error@:13 {{cannot convert value of type 'Bool' to expected argument type 'Array<Bool>'}}
   var v75 = true + "str" // expected-error@:13 {{cannot convert value of type 'Bool' to expected argument type 'String'}}
 }
@@ -344,14 +355,14 @@ func forceUniversalBridgeToAnyObject<T, U: KnownClassProtocol>(a: T, b: U, c: An
   z = g as AnyObject
   z = h as AnyObject
 
-  z = a // expected-error{{does not conform to 'AnyObject'}}
+  z = a // expected-error{{value of type 'T' expected to be an instance of a class or class-constrained type in assignment}}
   z = b
-  z = c // expected-error{{does not conform to 'AnyObject'}} expected-note {{cast 'Any' to 'AnyObject'}} {{8-8= as AnyObject}}
-  z = d // expected-error{{does not conform to 'AnyObject'}}
+  z = c // expected-error{{value of type 'Any' expected to be an instance of a class or class-constrained type in assignment}} expected-note {{cast 'Any' to 'AnyObject'}} {{8-8= as AnyObject}}
+  z = d // expected-error{{value of type 'KnownUnbridged' expected to be an instance of a class or class-constrained type in assignment}}
   z = e
   z = f
   z = g
-  z = h // expected-error{{does not conform to 'AnyObject'}}
+  z = h // expected-error{{value of type 'String' expected to be an instance of a class or class-constrained type in assignment}}
 
   _ = z
 }
@@ -372,5 +383,14 @@ func bridgeTupleToAnyObject() {
 
 // Array defaulting and bridging type checking error per rdar://problem/54274245
 func rdar54274245(_ arr: [Any]?) {
-  _ = (arr ?? []) as [NSObject]
+  _ = (arr ?? []) as [NSObject] // expected-warning {{coercion from '[Any]' to '[NSObject]' may fail; use 'as?' or 'as!' instead}}
+}
+
+// rdar://problem/60501780 - failed to infer NSString as a value type of a dictionary
+func rdar60501780() {
+  func foo(_: [String: NSObject]) {}
+
+  func bar(_ v: String) {
+    foo(["": "", "": v as NSString])
+  }
 }

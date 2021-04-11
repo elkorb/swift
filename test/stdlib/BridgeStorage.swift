@@ -1,8 +1,8 @@
-//===--- BridgeStorage.swift.gyb ------------------------------*- swift -*-===//
+//===--- BridgeStorage.swift ----------------------------------------------===//
 //
 // This source file is part of the Swift.org open source project
 //
-// Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
+// Copyright (c) 2014 - 2020 Apple Inc. and the Swift project authors
 // Licensed under Apache License v2.0 with Runtime Library Exception
 //
 // See https://swift.org/LICENSE.txt for license information
@@ -145,6 +145,8 @@ allTests.test("_BridgeStorage") {
         expectTrue(b.unflaggedNativeInstance === c)
         expectFalse(b.isUniquelyReferencedUnflaggedNative())
       }
+      // Keep 'c' alive for the isUniquelyReferenced check above.
+      _fixLifetime(c)
     }
 
   }

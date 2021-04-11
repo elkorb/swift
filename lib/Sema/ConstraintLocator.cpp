@@ -15,63 +15,27 @@
 // a particular constraint was derived.
 //
 //===----------------------------------------------------------------------===//
-#include "ConstraintLocator.h"
-#include "ConstraintSystem.h"
+#include "swift/Sema/ConstraintLocator.h"
 #include "swift/AST/Decl.h"
 #include "swift/AST/Expr.h"
 #include "swift/AST/Types.h"
+#include "swift/AST/ProtocolConformance.h"
+#include "swift/Sema/Constraint.h"
+#include "swift/Sema/ConstraintLocator.h"
+#include "swift/Sema/ConstraintSystem.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
 using namespace swift;
 using namespace constraints;
 
-void ConstraintLocator::Profile(llvm::FoldingSetNodeID &id, Expr *anchor,
+void ConstraintLocator::Profile(llvm::FoldingSetNodeID &id, ASTNode anchor,
                                 ArrayRef<PathElement> path) {
-  id.AddPointer(anchor);
+  id.AddPointer(anchor.getOpaqueValue());
   id.AddInteger(path.size());
   for (auto elt : path) {
     id.AddInteger(elt.getKind());
-    switch (elt.getKind()) {
-    case GenericParameter:
-      id.AddPointer(elt.castTo<LocatorPathElt::GenericParameter>().getType());
-      break;
-
-    case ProtocolRequirement: {
-      auto reqElt = elt.castTo<LocatorPathElt::ProtocolRequirement>();
-      id.AddPointer(reqElt.getDecl());
-      break;
-    }
-
-    case Witness:
-      id.AddPointer(elt.castTo<LocatorPathElt::Witness>().getDecl());
-      break;
-
-    case KeyPathDynamicMember: {
-      auto kpElt = elt.castTo<LocatorPathElt::KeyPathDynamicMember>();
-      id.AddPointer(kpElt.getKeyPathDecl());
-      break;
-    }
-    case GenericArgument:
-    case NamedTupleElement:
-    case TupleElement:
-    case ApplyArgToParam:
-    case OpenedGeneric:
-    case KeyPathComponent:
-    case ConditionalRequirement:
-    case TypeParameterRequirement:
-    case ContextualType:
-    case SynthesizedArgument: {
-      auto numValues = numNumericValuesInPathElement(elt.getKind());
-      for (unsigned i = 0; i < numValues; ++i)
-        id.AddInteger(elt.getValue(i));
-      break;
-    }
-#define SIMPLE_LOCATOR_PATH_ELT(Name) case Name :
-#include "ConstraintLocatorPathElts.def"
-      // Nothing to do for simple locator elements.
-      break;
-    }
+    id.AddInteger(elt.getRawStorage());
   }
 }
 
@@ -81,7 +45,9 @@ unsigned LocatorPathElt::getNewSummaryFlags() const {
   case ConstraintLocator::ApplyFunction:
   case ConstraintLocator::SequenceElementType:
   case ConstraintLocator::ClosureResult:
+  case ConstraintLocator::ClosureBody:
   case ConstraintLocator::ConstructorMember:
+  case ConstraintLocator::ResultBuilderBodyResult:
   case ConstraintLocator::InstanceType:
   case ConstraintLocator::AutoclosureResult:
   case ConstraintLocator::OptionalPayload:
@@ -91,7 +57,7 @@ unsigned LocatorPathElt::getNewSummaryFlags() const {
   case ConstraintLocator::ParentType:
   case ConstraintLocator::ExistentialSuperclassType:
   case ConstraintLocator::LValueConversion:
-  case ConstraintLocator::RValueAdjustment:
+  case ConstraintLocator::DynamicType:
   case ConstraintLocator::SubscriptMember:
   case ConstraintLocator::OpenedGeneric:
   case ConstraintLocator::GenericParameter:
@@ -103,6 +69,7 @@ unsigned LocatorPathElt::getNewSummaryFlags() const {
   case ConstraintLocator::KeyPathComponent:
   case ConstraintLocator::ConditionalRequirement:
   case ConstraintLocator::TypeParameterRequirement:
+  case ConstraintLocator::ConformanceRequirement:
   case ConstraintLocator::ImplicitlyUnwrappedDisjunctionChoice:
   case ConstraintLocator::DynamicLookupResult:
   case ConstraintLocator::ContextualType:
@@ -115,6 +82,12 @@ unsigned LocatorPathElt::getNewSummaryFlags() const {
   case ConstraintLocator::Condition:
   case ConstraintLocator::DynamicCallable:
   case ConstraintLocator::ImplicitCallAsFunction:
+  case ConstraintLocator::TernaryBranch:
+  case ConstraintLocator::PatternMatch:
+  case ConstraintLocator::ArgumentAttribute:
+  case ConstraintLocator::UnresolvedMemberChainResult:
+  case ConstraintLocator::PlaceholderType:
+  case ConstraintLocator::ImplicitConversion:
     return 0;
 
   case ConstraintLocator::FunctionArgument:
@@ -130,16 +103,10 @@ unsigned LocatorPathElt::getNewSummaryFlags() const {
   llvm_unreachable("Unhandled PathElementKind in switch.");
 }
 
-bool LocatorPathElt::isResultOfSingleExprFunction() const {
-  if (auto elt = getAs<ContextualType>())
-    return elt->isForSingleExprFunction();
-  return false;
-}
-
 /// Determine whether given locator points to the subscript reference
 /// e.g. `foo[0]` or `\Foo.[0]`
 bool ConstraintLocator::isSubscriptMemberRef() const {
-  auto *anchor = getAnchor();
+  auto anchor = getAnchor();
   auto path = getPath();
 
   if (!anchor || path.empty())
@@ -149,16 +116,16 @@ bool ConstraintLocator::isSubscriptMemberRef() const {
 }
 
 bool ConstraintLocator::isKeyPathType() const {
-  auto *anchor = getAnchor();
+  auto anchor = getAnchor();
   auto path = getPath();
   // The format of locator should be `<keypath expr> -> key path type`
-  if (!anchor || !isa<KeyPathExpr>(anchor) || path.size() != 1)
+  if (!anchor || !isExpr<KeyPathExpr>(anchor) || path.size() != 1)
     return false;
   return path.back().getKind() == ConstraintLocator::KeyPathType;
 }
 
 bool ConstraintLocator::isKeyPathRoot() const {
-  auto *anchor = getAnchor();
+  auto anchor = getAnchor();
   auto path = getPath();
 
   if (!anchor || path.empty())
@@ -168,7 +135,7 @@ bool ConstraintLocator::isKeyPathRoot() const {
 }
 
 bool ConstraintLocator::isKeyPathValue() const {
-  auto *anchor = getAnchor();
+  auto anchor = getAnchor();
   auto path = getPath();
 
   if (!anchor || path.empty())
@@ -184,7 +151,7 @@ bool ConstraintLocator::isResultOfKeyPathDynamicMemberLookup() const {
 }
 
 bool ConstraintLocator::isKeyPathSubscriptComponent() const {
-  auto *anchor = getAnchor();
+  auto *anchor = getAsExpr(getAnchor());
   auto *KPE = dyn_cast_or_null<KeyPathExpr>(anchor);
   if (!KPE)
     return false;
@@ -207,10 +174,14 @@ bool ConstraintLocator::isForKeyPathDynamicMemberLookup() const {
   return !path.empty() && path.back().isKeyPathDynamicMember();
 }
 
-bool ConstraintLocator::isForKeyPathComponent() const {
+bool ConstraintLocator::isInKeyPathComponent() const {
   return llvm::any_of(getPath(), [&](const LocatorPathElt &elt) {
     return elt.isKeyPathComponent();
   });
+}
+
+bool ConstraintLocator::isForKeyPathComponentResult() const {
+  return isLastElement<LocatorPathElt::KeyPathComponentResult>();
 }
 
 bool ConstraintLocator::isForGenericParameter() const {
@@ -223,6 +194,22 @@ bool ConstraintLocator::isForSequenceElementType() const {
 
 bool ConstraintLocator::isForContextualType() const {
   return isLastElement<LocatorPathElt::ContextualType>();
+}
+
+bool ConstraintLocator::isForAssignment() const {
+  return directlyAt<AssignExpr>();
+}
+
+bool ConstraintLocator::isForCoercion() const {
+  return directlyAt<CoerceExpr>();
+}
+
+bool ConstraintLocator::isForOptionalTry() const {
+  return directlyAt<OptionalTryExpr>();
+}
+
+bool ConstraintLocator::isForResultBuilderBodyResult() const {
+  return isFirstElement<LocatorPathElt::ResultBuilderBodyResult>();
 }
 
 GenericTypeParamType *ConstraintLocator::getGenericParameter() const {
@@ -248,11 +235,11 @@ void ConstraintLocator::dump(SourceManager *sm, raw_ostream &out) const {
   
   out << "locator@" << (void*) this << " [";
 
-  if (anchor) {
-    out << Expr::getKindName(anchor->getKind());
+  if (auto *expr = anchor.dyn_cast<Expr *>()) {
+    out << Expr::getKindName(expr->getKind());
     if (sm) {
       out << '@';
-      anchor->getLoc().print(out, *sm);
+      expr->getLoc().print(out, *sm);
     }
   }
 
@@ -307,6 +294,10 @@ void ConstraintLocator::dump(SourceManager *sm, raw_ostream &out) const {
       out << "closure result";
       break;
 
+    case ClosureBody:
+      out << "type of a closure body";
+      break;
+
     case ConstructorMember:
       out << "constructor member";
       break;
@@ -317,6 +308,10 @@ void ConstraintLocator::dump(SourceManager *sm, raw_ostream &out) const {
 
     case FunctionResult:
       out << "function result";
+      break;
+
+    case ResultBuilderBodyResult:
+      out << "result builder body result";
       break;
 
     case SequenceElementType:
@@ -365,8 +360,8 @@ void ConstraintLocator::dump(SourceManager *sm, raw_ostream &out) const {
       out << "@lvalue-to-inout conversion";
       break;
 
-    case RValueAdjustment:
-      out << "rvalue adjustment";
+    case DynamicType:
+      out << "`.dynamicType` reference";
       break;
 
     case SubscriptMember:
@@ -412,6 +407,15 @@ void ConstraintLocator::dump(SourceManager *sm, raw_ostream &out) const {
       break;
     }
 
+    case ConformanceRequirement: {
+      auto *conformance =
+          elt.castTo<LocatorPathElt::ConformanceRequirement>().getConformance();
+      out << "conformance requirement (";
+      conformance->getProtocol()->dumpRef(out);
+      out << ")";
+      break;
+    }
+
     case ImplicitlyUnwrappedDisjunctionChoice:
       out << "implicitly unwrapped disjunction choice";
       break;
@@ -421,10 +425,7 @@ void ConstraintLocator::dump(SourceManager *sm, raw_ostream &out) const {
       break;
 
     case ContextualType:
-      if (elt.isResultOfSingleExprFunction())
-        out << "expected result type of the function with a single expression";
-      else
-        out << "contextual type";
+      out << "contextual type";
       break;
 
     case SynthesizedArgument: {
@@ -462,6 +463,57 @@ void ConstraintLocator::dump(SourceManager *sm, raw_ostream &out) const {
 
     case ImplicitCallAsFunction:
       out << "implicit reference to callAsFunction";
+      break;
+
+    case TernaryBranch: {
+      auto branchElt = elt.castTo<LocatorPathElt::TernaryBranch>();
+      out << (branchElt.forThen() ? "'then'" : "'else'")
+          << " branch of a ternary operator";
+      break;
+    }
+
+    case PatternMatch:
+      out << "pattern match";
+      break;
+
+    case ArgumentAttribute: {
+      using AttrLoc = LocatorPathElt::ArgumentAttribute;
+
+      auto attrElt = elt.castTo<AttrLoc>();
+      out << "argument attribute: ";
+
+      switch (attrElt.getAttr()) {
+      case AttrLoc::Attribute::InOut:
+        out << "inout";
+        break;
+
+      case AttrLoc::Attribute::Escaping:
+        out << "@escaping";
+        break;
+
+      case AttrLoc::Attribute::Concurrent:
+        out << "@Sendable";
+        break;
+
+      case AttrLoc::Attribute::GlobalActor:
+        out << "@<global actor>";
+        break;
+      }
+
+      break;
+    }
+
+    case UnresolvedMemberChainResult:
+      out << "unresolved chain result";
+      break;
+
+    case PlaceholderType:
+      out << "placeholder type";
+      break;
+
+    case ConstraintLocator::ImplicitConversion:
+      auto convElt = elt.castTo<LocatorPathElt::ImplicitConversion>();
+      out << "implicit conversion " << getName(convElt.getConversionKind());
       break;
     }
   }

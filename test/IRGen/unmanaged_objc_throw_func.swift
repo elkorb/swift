@@ -1,5 +1,6 @@
-// RUN: %target-swift-frontend -emit-ir %s | %FileCheck %s
+// RUN: %target-swift-frontend -emit-ir -enable-copy-propagation %s | %FileCheck %s
 // REQUIRES: objc_interop
+// REQUIRES: optimized_stdlib
 
 import Foundation
 
@@ -15,11 +16,11 @@ import Foundation
     // CHECK-NEXT: %[[T2:.+]] = extractvalue { %swift.bridge*, i8* } %[[T0]], 1
     // CHECK-NEXT: %[[T3:.+]] = bitcast i8* %[[T2]] to %TSi*
     // CHECK-NEXT: %._value = getelementptr inbounds %TSi, %TSi* %[[T3]], i32 0, i32 0
-    // CHECK-NEXT: store i{{32|64}} 1, i{{32|64}}* %._value, align {{[0-9]+}}
-    // CHECK-NEXT: %[[T4:.+]] = call swiftcc %TSo7NSArrayC* @"$sSa10FoundationE19_bridgeToObjectiveCSo7NSArrayCyF"(%swift.bridge* %[[T1]], %swift.type* @"$sSiN")
+    // CHECK:      %[[T7:.+]] = call swiftcc %swift.bridge* @"$ss27_finalizeUninitializedArrayySayxGABnlF"(%swift.bridge* %[[T1]], %swift.type* @"$sSiN")
+    // CHECK:      %[[T4:.+]] = call swiftcc %TSo7NSArrayC* @"$sSa10FoundationE19_bridgeToObjectiveCSo7NSArrayCyF"(%swift.bridge* %[[T7]], %swift.type* @"$sSiN")
     // CHECK-NEXT: %[[T5:.+]] = bitcast %TSo7NSArrayC* %[[T4]] to %TSo10CFArrayRefa*
-    // CHECK-NEXT: call void asm sideeffect "", "r"(%TSo10CFArrayRefa* %[[T5]])
-    // CHECK-NEXT: call void @swift_bridgeObjectRelease(%swift.bridge* %[[T1]]) #{{[0-9]+}}
+    // CHECK-NEXT: store %TSo10CFArrayRefa* %[[T5]]
+    // CHECK-NEXT: call void @swift_bridgeObjectRelease(%swift.bridge* %{{[0-9]+}}) #{{[0-9]+}}
     // CHECK-NEXT: %[[T6:.+]] = bitcast %TSo10CFArrayRefa* %[[T5]] to i8*
     // CHECK-NEXT: call void @llvm.objc.release(i8* %[[T6]])
     // CHECK-NEXT: ret %TSo10CFArrayRefa* %[[T5]]
@@ -35,12 +36,16 @@ import Foundation
 
 // CHECK: [[L2]]:                                     ; preds = %entry
 // CHECK-NEXT: %[[T4:.+]] = phi %TSo10CFArrayRefa* [ %[[T0]], %entry ]
+// CHECK-NEXT: %[[T4a:.+]] = bitcast %T25unmanaged_objc_throw_func9SR_9035_CC* %{{.+}} to i8*
+// CHECK-NEXT: call void @llvm.objc.release(i8* %[[T4a]])
 // CHECK-NEXT: %[[T5:.+]] = ptrtoint %TSo10CFArrayRefa* %[[T4]] to i{{32|64}}
 // CHECK-NEXT: br label %[[L3:.+]]
 
 // CHECK: [[L1]]:                                     ; preds = %entry
 // CHECK-NEXT: %[[T6:.+]] = phi %swift.error* [ %[[T2]], %entry ]
 // CHECK-NEXT: store %swift.error* null, %swift.error** %swifterror, align {{[0-9]+}}
+// CHECK-NEXT: %[[T6a:.+]] = bitcast %T25unmanaged_objc_throw_func9SR_9035_CC* %{{.+}} to i8*
+// CHECK-NEXT: call void @llvm.objc.release(i8* %[[T6a]])
 // CHECK-NEXT: %[[T7:.+]] = icmp eq i{{32|64}} %{{.+}}, 0
 // CHECK-NEXT: br i1 %[[T7]], label %[[L4:.+]], label %[[L5:.+]]
 
@@ -65,7 +70,5 @@ import Foundation
 
 // CHECK: [[L3]]:                                     ; preds = %[[L2]], %[[L7]]
 // CHECK-NEXT: %[[T12:.+]] = phi i{{32|64}} [ 0, %[[L7]] ], [ %[[T5]], %[[L2]] ]
-// CHECK-NEXT: %[[T13:.+]] = bitcast %T25unmanaged_objc_throw_func9SR_9035_CC* %{{.+}} to i8*
-// CHECK-NEXT: call void @llvm.objc.release(i8* %[[T13]])
-// CHECK-NEXT: %[[T14:.+]] = inttoptr i{{32|64}} %[[T12]] to %struct.__CFArray**
-// CHECK-NEXT: ret %struct.__CFArray** %[[T14]]
+// CHECK-NEXT: %[[T14:.+]] = inttoptr i{{32|64}} %[[T12]] to %struct.__CFArray*
+// CHECK-NEXT: ret %struct.__CFArray* %[[T14]]

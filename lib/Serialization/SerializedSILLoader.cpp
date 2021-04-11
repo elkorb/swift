@@ -27,7 +27,7 @@ SerializedSILLoader::SerializedSILLoader(
 
   // Get a list of SerializedModules from ASTContext.
   // FIXME: Iterating over LoadedModules is not a good way to do this.
-  for (auto &Entry : Ctx.LoadedModules) {
+  for (const auto &Entry : Ctx.getLoadedModules()) {
     for (auto File : Entry.second->getFiles()) {
       if (auto LoadedAST = dyn_cast<SerializedASTFile>(File)) {
         auto Des = new SILDeserializer(&LoadedAST->File, *SILMod, callbacks);
@@ -128,21 +128,77 @@ lookupDefaultWitnessTable(SILDefaultWitnessTable *WT) {
   return nullptr;
 }
 
-void SerializedSILLoader::invalidateCaches() {
-  for (auto &Des : LoadedSILSections)
-    Des->invalidateFunctionCache();
+SILDifferentiabilityWitness *
+SerializedSILLoader::lookupDifferentiabilityWitness(
+    SILDifferentiabilityWitnessKey key) {
+  Mangle::ASTMangler mangler;
+  auto mangledKey = mangler.mangleSILDifferentiabilityWitness(
+     key.originalFunctionName, key.kind, key.config);
+  // It is possible that one module has a declaration of a
+  // SILDifferentiabilityWitness, while another has the full definition.
+  SILDifferentiabilityWitness *dw = nullptr;
+  for (auto &Des : LoadedSILSections) {
+    dw = Des->lookupDifferentiabilityWitness(mangledKey);
+    if (dw && dw->isDefinition())
+      return dw;
+  }
+  return dw;
 }
 
-bool SerializedSILLoader::invalidateFunction(SILFunction *F) {
-  for (auto &Des : LoadedSILSections)
-    if (Des->invalidateFunction(F))
+void SerializedSILLoader::invalidateAllCaches() {
+  for (auto &des : LoadedSILSections)
+    des->invalidateAllCaches();
+}
+
+bool SerializedSILLoader::invalidateFunction(SILFunction *fn) {
+  for (auto &des : LoadedSILSections)
+    if (des->invalidateFunction(fn))
       return true;
   return false;
 }
 
-void SerializedSILLoader::getAll() {
-  for (auto &Des : LoadedSILSections)
-    Des->getAll();
+bool SerializedSILLoader::invalidateGlobalVariable(SILGlobalVariable *gv) {
+  for (auto &des : LoadedSILSections)
+    if (des->invalidateGlobalVariable(gv))
+      return true;
+  return false;
+}
+
+bool SerializedSILLoader::invalidateVTable(SILVTable *vt) {
+  for (auto &des : LoadedSILSections)
+    if (des->invalidateVTable(vt))
+      return true;
+  return false;
+}
+
+bool SerializedSILLoader::invalidateWitnessTable(SILWitnessTable *wt) {
+  for (auto &des : LoadedSILSections)
+    if (des->invalidateWitnessTable(wt))
+      return true;
+  return false;
+}
+
+bool SerializedSILLoader::invalidateDefaultWitnessTable(
+    SILDefaultWitnessTable *wt) {
+  for (auto &des : LoadedSILSections)
+    if (des->invalidateDefaultWitnessTable(wt))
+      return true;
+  return false;
+}
+
+bool SerializedSILLoader::invalidateProperty(SILProperty *p) {
+  for (auto &des : LoadedSILSections)
+    if (des->invalidateProperty(p))
+      return true;
+  return false;
+}
+
+bool SerializedSILLoader::invalidateDifferentiabilityWitness(
+    SILDifferentiabilityWitness *w) {
+  for (auto &des : LoadedSILSections)
+    if (des->invalidateDifferentiabilityWitness(w))
+      return true;
+  return false;
 }
 
 // FIXME: Not the best interface. We know exactly which FileUnits may have SIL
@@ -186,3 +242,8 @@ void SerializedSILLoader::getAllProperties() {
     Des->getAllProperties();
 }
 
+/// Deserialize all DifferentiabilityWitnesses in all SILModules.
+void SerializedSILLoader::getAllDifferentiabilityWitnesses() {
+  for (auto &Des : LoadedSILSections)
+    Des->getAllDifferentiabilityWitnesses();
+}

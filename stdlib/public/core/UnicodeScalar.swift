@@ -29,11 +29,11 @@ extension Unicode {
   /// You can also create Unicode scalar values directly from their numeric
   /// representation.
   ///
-  ///     let airplane = Unicode.Scalar(9992)
+  ///     let airplane = Unicode.Scalar(9992)!
   ///     print(airplane)
   ///     // Prints "✈︎"
   @frozen
-  public struct Scalar {
+  public struct Scalar: Sendable {
     @inlinable
     internal init(_value: UInt32) {
       self._value = _value
@@ -171,7 +171,7 @@ extension Unicode.Scalar :
   /// Scalar values representing characters that are normally unprintable or
   /// that otherwise require escaping are escaped with a backslash.
   ///
-  ///     let tab = Unicode.Scalar(9)
+  ///     let tab = Unicode.Scalar(9)!
   ///     print(tab)
   ///     // Prints " "
   ///     print(tab.escaped(asASCII: false))
@@ -182,7 +182,7 @@ extension Unicode.Scalar :
   /// value; otherwise, non-ASCII characters are represented using their
   /// typical string value.
   ///
-  ///     let bap = Unicode.Scalar(48165)
+  ///     let bap = Unicode.Scalar(48165)!
   ///     print(bap.escaped(asASCII: false))
   ///     // Prints "밥"
   ///     print(bap.escaped(asASCII: true))
@@ -323,7 +323,7 @@ extension Unicode.Scalar {
   /// with a value of an emoji character:
   ///
   ///     let codepoint = 127881
-  ///     let emoji = Unicode.Scalar(codepoint)
+  ///     let emoji = Unicode.Scalar(codepoint)!
   ///     print(emoji)
   ///     // Prints "🎉"
   ///
@@ -387,7 +387,7 @@ extension Unicode.Scalar: Comparable {
 
 extension Unicode.Scalar {
   @frozen
-  public struct UTF16View {
+  public struct UTF16View: Sendable {
     @inlinable
     internal init(value: Unicode.Scalar) {
       self.value = value
@@ -437,7 +437,7 @@ extension Unicode.Scalar.UTF16View: RandomAccessCollection {
 extension Unicode.Scalar {
   @available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
   @frozen
-  public struct UTF8View {
+  public struct UTF8View: Sendable {
     @inlinable
     internal init(value: Unicode.Scalar) {
       self.value = value

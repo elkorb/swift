@@ -59,11 +59,12 @@ class CursorInfoResolver : public SourceEntityWalker {
   SourceLoc LocToResolve;
   ResolvedCursorInfo CursorInfo;
   Type ContainerType;
-  llvm::SmallVector<Expr*, 4> TrailingExprStack;
+  Expr *OutermostCursorExpr;
+  llvm::SmallVector<Expr*, 8> ExprStack;
 
 public:
   explicit CursorInfoResolver(SourceFile &SrcFile) :
-    SrcFile(SrcFile), CursorInfo(&SrcFile) {}
+    SrcFile(SrcFile), CursorInfo(&SrcFile), OutermostCursorExpr(nullptr) {}
   ResolvedCursorInfo resolve(SourceLoc Loc);
   SourceManager &getSourceMgr() const;
 private:
@@ -99,8 +100,8 @@ SourceManager &CursorInfoResolver::getSourceMgr() const
 }
 
 bool CursorInfoResolver::tryResolve(ValueDecl *D, TypeDecl *CtorTyRef,
-                                 ExtensionDecl *ExtTyRef, SourceLoc Loc,
-                                 bool IsRef, Type Ty) {
+                                    ExtensionDecl *ExtTyRef, SourceLoc Loc,
+                                    bool IsRef, Type Ty) {
   if (!D->hasName())
     return false;
 
@@ -116,6 +117,14 @@ bool CursorInfoResolver::tryResolve(ValueDecl *D, TypeDecl *CtorTyRef,
       }
     }
   }
+
+  if (isBeingCalled(ExprStack)) {
+    if (Expr *BaseE = getBase(ExprStack)) {
+      CursorInfo.IsDynamic = isDynamicCall(BaseE, D);
+      ide::getReceiverType(BaseE, CursorInfo.ReceiverTypes);
+    }
+  }
+
   CursorInfo.setValueRef(D, CtorTyRef, ExtTyRef, IsRef, Ty, ContainerType);
   return true;
 }
@@ -221,44 +230,55 @@ bool CursorInfoResolver::visitDeclReference(ValueDecl *D,
   return !tryResolve(D, CtorTyRef, ExtTyRef, Range.getStart(), /*IsRef=*/true, T);
 }
 
-bool CursorInfoResolver::walkToExprPre(Expr *E) {
-  if (!isDone()) {
-    if (auto SAE = dyn_cast<SelfApplyExpr>(E)) {
-      if (SAE->getFn()->getStartLoc() == LocToResolve) {
-        ContainerType = SAE->getBase()->getType();
-      }
-    } else if (auto ME = dyn_cast<MemberRefExpr>(E)) {
-      SourceLoc MemberLoc = ME->getNameLoc().getBaseNameLoc();
-      if (MemberLoc.isValid() && MemberLoc == LocToResolve) {
-        ContainerType = ME->getBase()->getType();
-      }
-    }
-    auto IsProperCursorLocation = E->getStartLoc() == LocToResolve;
-    // Handle cursor placement after `try` in ForceTry and OptionalTry Expr.
-    auto CheckLocation = [&IsProperCursorLocation, this](SourceLoc Loc) {
-      IsProperCursorLocation = Loc == LocToResolve || IsProperCursorLocation;
-    };
-    if (auto *FTE = dyn_cast<ForceTryExpr>(E)) {
-      CheckLocation(FTE->getExclaimLoc());
-    }
-    if (auto *OTE = dyn_cast<OptionalTryExpr>(E)) {
-      CheckLocation(OTE->getQuestionLoc());
-    }
-    // Keep track of trailing expressions.
-    if (!E->isImplicit() && IsProperCursorLocation)
-      TrailingExprStack.push_back(E);
+static bool isCursorOn(Expr *E, SourceLoc Loc) {
+  if (E->isImplicit())
+    return false;
+
+  bool IsCursorOnLoc = E->getStartLoc() == Loc;
+  // Handle cursor placement after `try` in (ForceTry|OptionalTry)Expr
+  if (auto *FTE = dyn_cast<ForceTryExpr>(E)) {
+    IsCursorOnLoc |= FTE->getExclaimLoc() == Loc;
   }
+  if (auto *OTE = dyn_cast<OptionalTryExpr>(E)) {
+    IsCursorOnLoc |= OTE->getQuestionLoc() == Loc;
+  }
+  return IsCursorOnLoc;
+}
+
+bool CursorInfoResolver::walkToExprPre(Expr *E) {
+  if (isDone())
+    return true;
+
+  if (auto SAE = dyn_cast<SelfApplyExpr>(E)) {
+    if (SAE->getFn()->getStartLoc() == LocToResolve) {
+      ContainerType = SAE->getBase()->getType();
+    }
+  } else if (auto ME = dyn_cast<MemberRefExpr>(E)) {
+    SourceLoc MemberLoc = ME->getNameLoc().getBaseNameLoc();
+    if (MemberLoc.isValid() && MemberLoc == LocToResolve) {
+      ContainerType = ME->getBase()->getType();
+    }
+  }
+
+  if (!OutermostCursorExpr && isCursorOn(E, LocToResolve))
+    OutermostCursorExpr = E;
+
+  ExprStack.push_back(E);
+
   return true;
 }
 
 bool CursorInfoResolver::walkToExprPost(Expr *E) {
   if (isDone())
     return false;
-  if (!TrailingExprStack.empty() && TrailingExprStack.back() == E) {
-    // We return the outtermost expression in the token info.
-    CursorInfo.setTrailingExpr(TrailingExprStack.front());
+
+  if (OutermostCursorExpr && isCursorOn(E, LocToResolve)) {
+    CursorInfo.setTrailingExpr(OutermostCursorExpr);
     return false;
   }
+
+  ExprStack.pop_back();
+
   return true;
 }
 
@@ -303,7 +323,7 @@ bool CursorInfoResolver::rangeContainsLoc(CharSourceRange Range) const {
   return Range.contains(LocToResolve);
 }
 
-llvm::Expected<ide::ResolvedCursorInfo>
+ide::ResolvedCursorInfo
 CursorInfoRequest::evaluate(Evaluator &eval, CursorInfoOwner CI) const {
   if (!CI.isValid())
     return ResolvedCursorInfo();
@@ -320,7 +340,7 @@ void swift::simple_display(llvm::raw_ostream &out, const CursorInfoOwner &owner)
     return;
   auto &SM = owner.File->getASTContext().SourceMgr;
   out << SM.getIdentifierForBuffer(*owner.File->getBufferID());
-  auto LC = SM.getLineAndColumn(owner.Loc);
+  auto LC = SM.getPresumedLineAndColumnForLoc(owner.Loc);
   out << ":" << LC.first << ":" << LC.second;
 }
 
@@ -331,7 +351,7 @@ void swift::ide::simple_display(llvm::raw_ostream &out,
   out << "Resolved cursor info at ";
   auto &SM = info.SF->getASTContext().SourceMgr;
   out << SM.getIdentifierForBuffer(*info.SF->getBufferID());
-  auto LC = SM.getLineAndColumn(info.Loc);
+  auto LC = SM.getPresumedLineAndColumnForLoc(info.Loc);
   out << ":" << LC.first << ":" << LC.second;
 }
 
@@ -577,7 +597,7 @@ private:
   }
 
   DeclContext *getImmediateContext() {
-    for (auto It = ContextStack.rbegin(); It != ContextStack.rend(); It ++) {
+    for (auto It = ContextStack.rbegin(); It != ContextStack.rend(); ++It) {
       if (auto *DC = It->Parent.getAsDeclContext())
         return DC;
     }
@@ -647,7 +667,7 @@ public:
     while(StartIt != AllTokens.end()) {
       if (StartIt->getKind() != tok::comment)
         break;
-      StartIt ++;
+      ++StartIt;
     }
 
     // Erroneous case.
@@ -740,7 +760,7 @@ public:
     for (auto N : Nodes) {
       if (Stmt *S = N.is<Stmt*>() ? N.get<Stmt*>() : nullptr) {
         if (S->getKind() == StmtKind::Case)
-          CaseCount++;
+          ++CaseCount;
       }
     }
     // If there are more than one case/default statements, there are more than
@@ -795,12 +815,33 @@ public:
     analyzeDecl(D);
     auto &DCInfo = getCurrentDC();
 
-    auto NodeRange = Node.getSourceRange();
-
     // Widen the node's source range to include all attributes to get a range
     // match if a function with its attributes has been selected.
-    if (auto D = Node.dyn_cast<Decl *>())
-      NodeRange = D->getSourceRangeIncludingAttrs();
+    auto getSourceRangeIncludingAttrs = [](ASTNode N) -> SourceRange {
+      if (auto D = N.dyn_cast<Decl *>()) {
+        return D->getSourceRangeIncludingAttrs();
+      } else {
+        return N.getSourceRange();
+      }
+    };
+
+    auto NodeRange = getSourceRangeIncludingAttrs(Node);
+
+    // SemaAnnotator walks the AST in source order, but considers source order
+    // for declarations to be defined by their range *excluding* attributes.
+    // In RangeResolver, we attributes as belonging to their decl (see comment
+    // on getSourceRAngeIncludingAttrs above).
+    // Thus, for the purpose RangeResolver, we need to assume that SemaAnnotator
+    // hands us the nodes in arbitrary order.
+    //
+    // Remove any nodes that are contained by the newly added one.
+    auto removeIterator = std::remove_if(
+        ContainedASTNodes.begin(), ContainedASTNodes.end(),
+        [&](ASTNode ContainedNode) {
+          return SM.rangeContains(NodeRange,
+                                  getSourceRangeIncludingAttrs(ContainedNode));
+        });
+    ContainedASTNodes.erase(removeIterator, ContainedASTNodes.end());
 
     switch (getRangeMatchKind(NodeRange)) {
       case RangeMatchKind::NoneMatch: {
@@ -828,11 +869,16 @@ public:
 
     // If no parent is considered as a contained node; this node should be
     // a top-level contained node.
+    // If a node that contains this one is later discovered, this node will be
+    // removed from ContainedASTNodes again.
     if (std::none_of(ContainedASTNodes.begin(), ContainedASTNodes.end(),
-      [&](ASTNode N) { return SM.rangeContains(N.getSourceRange(),
-                                               Node.getSourceRange()); })) {
-        ContainedASTNodes.push_back(Node);
-      }
+                     [&](ASTNode ContainedNode) {
+                       return SM.rangeContains(
+                           getSourceRangeIncludingAttrs(ContainedNode),
+                           NodeRange);
+                     })) {
+      ContainedASTNodes.push_back(Node);
+    }
 
     if (DCInfo.isMultiStatement()) {
       postAnalysis(DCInfo.EndMatches.back());
@@ -1052,8 +1098,8 @@ void swift::simple_display(llvm::raw_ostream &out,
     return;
   auto &SM = owner.File->getASTContext().SourceMgr;
   out << SM.getIdentifierForBuffer(*owner.File->getBufferID());
-  auto SLC = SM.getLineAndColumn(owner.StartLoc);
-  auto ELC = SM.getLineAndColumn(owner.EndLoc);
+  auto SLC = SM.getPresumedLineAndColumnForLoc(owner.StartLoc);
+  auto ELC = SM.getPresumedLineAndColumnForLoc(owner.EndLoc);
   out << ": (" << SLC.first << ":" << SLC.second << ", "
     << ELC.first << ":" << ELC.second << ")";
 }
@@ -1066,7 +1112,7 @@ RangeInfoOwner::RangeInfoOwner(SourceFile *File, unsigned Offset,
   EndLoc = SM.getLocForOffset(BufferId, Offset + Length);
 }
 
-llvm::Expected<ide::ResolvedRangeInfo>
+ide::ResolvedRangeInfo
 RangeInfoRequest::evaluate(Evaluator &eval, RangeInfoOwner CI) const {
   if (!CI.isValid())
     return ResolvedRangeInfo();
@@ -1092,10 +1138,10 @@ static Type getContextFreeInterfaceType(ValueDecl *VD) {
   return VD->getInterfaceType();
 }
 
-llvm::Expected<ArrayRef<ValueDecl*>>
+ArrayRef<ValueDecl *>
 ProvideDefaultImplForRequest::evaluate(Evaluator &eval, ValueDecl* VD) const {
   // Skip decls that don't have valid names.
-  if (!VD->getFullName())
+  if (!VD->getName())
     return ArrayRef<ValueDecl*>();
 
   // Check if VD is from a protocol extension.
@@ -1107,7 +1153,7 @@ ProvideDefaultImplForRequest::evaluate(Evaluator &eval, ValueDecl* VD) const {
   // the same name with VD.
   ResolvedMemberResult LookupResult =
   resolveValueMember(*P->getInnermostDeclContext(),
-                     P->getDeclaredInterfaceType(), VD->getFullName());
+                     P->getDeclaredInterfaceType(), VD->getName());
 
   auto VDType = getContextFreeInterfaceType(VD);
   for (auto Mem : LookupResult.getMemberDecls(InterestedMemberKind::All)) {
@@ -1126,7 +1172,7 @@ ProvideDefaultImplForRequest::evaluate(Evaluator &eval, ValueDecl* VD) const {
 //----------------------------------------------------------------------------//
 // CollectOverriddenDeclsRequest
 //----------------------------------------------------------------------------//
-llvm::Expected<ArrayRef<ValueDecl*>>
+ArrayRef<ValueDecl *>
 CollectOverriddenDeclsRequest::evaluate(Evaluator &evaluator,
                                         OverridenDeclsOwner Owner) const {
   std::vector<ValueDecl*> results;
@@ -1155,7 +1201,7 @@ CollectOverriddenDeclsRequest::evaluate(Evaluator &evaluator,
 //----------------------------------------------------------------------------//
 // ResolveProtocolNameRequest
 //----------------------------------------------------------------------------//
-llvm::Expected<ProtocolDecl*>
+ProtocolDecl *
 ResolveProtocolNameRequest::evaluate(Evaluator &evaluator,
                                      ProtocolNameOwner Input) const {
   auto &ctx = Input.DC->getASTContext();

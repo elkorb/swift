@@ -514,7 +514,7 @@ mirrors.test("struct/WrapNSArray") {
 // Check that Mirror correctly reflects weak/unowned refs to both
 // Swift and ObjC objects from Swift structs and classes.
 
-protocol WeakUnownedTestsP1: class {
+protocol WeakUnownedTestsP1: AnyObject {
   func f1() -> Int
 }
 
@@ -622,7 +622,7 @@ mirrors.test("Weak and Unowned Obj-C refs in class (SR-5289)") {
     }
   }
 
-	if #available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *) {
+	if #available(macOS 10.16, iOS 14.0, watchOS 7.0, tvOS 14.0, *) {
 		let objc = WeakUnownedObjCClass()
 		let classWithReferences = SwiftClassWithWeakAndUnowned(objc)
 		let m = Mirror(reflecting: classWithReferences)
@@ -656,7 +656,7 @@ mirrors.test("Weak and Unowned Obj-C refs in struct") {
     }
   }
 
-	if #available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *) {
+	if #available(macOS 10.16, iOS 14.0, watchOS 7.0, tvOS 14.0, *) {
 		let objc = WeakUnownedObjCClass()
 		let structWithReferences = SwiftStructWithWeakAndUnowned(objc)
 		let m = Mirror(reflecting: structWithReferences)
@@ -692,7 +692,7 @@ mirrors.test("Weak and Unowned Swift refs in class") {
     }
   }
 
-	if #available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *) {
+	if #available(macOS 10.16, iOS 14.0, watchOS 7.0, tvOS 14.0, *) {
 		let swift = WeakUnownedSwiftClass()
 		let classWithReferences = SwiftClassWithWeakAndUnowned(swift)
 		let m = Mirror(reflecting: classWithReferences)
@@ -726,7 +726,7 @@ mirrors.test("Weak and Unowned Swift refs in struct") {
     }
   }
 
-	if #available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *) {
+	if #available(macOS 10.16, iOS 14.0, watchOS 7.0, tvOS 14.0, *) {
 		let swift = WeakUnownedSwiftClass()
 		let structWithReferences = SwiftStructWithWeakAndUnowned(swift)
 		let m = Mirror(reflecting: structWithReferences)
@@ -1140,6 +1140,28 @@ mirrors.test("Enum/SingletonNonGeneric/DefaultMirror") {
     let expected =
       "▿ Mirror.SingletonNonGenericEnumWithDefaultMirror.OnlyOne\n" +
       "  - OnlyOne: 5\n"
+
+    expectEqual(expected, output)
+  }
+}
+
+enum ZeroSizedEnumWithDefaultMirror {
+  case π
+}
+
+enum SingletonZeroSizedEnumWithDefaultMirror {
+  case wrap(ZeroSizedEnumWithDefaultMirror)
+}
+
+mirrors.test("Enum/SingletonZeroSizedEnumWithDefaultMirror/DefaultMirror") {
+  do {
+    let value = SingletonZeroSizedEnumWithDefaultMirror.wrap(.π)
+    var output = ""
+    dump(value, to: &output)
+
+    let expected =
+      "▿ Mirror.SingletonZeroSizedEnumWithDefaultMirror.wrap\n" +
+      "  - wrap: Mirror.ZeroSizedEnumWithDefaultMirror.π\n"
 
     expectEqual(expected, output)
   }
@@ -2222,7 +2244,8 @@ if #available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 6.0, *) {
     testSTSDump(STSContainer.Cases<Int>.a(.init()),
                 STSContainer℠.Cases<Int>.a(.init()),
                 """
-      - Mirror.STSContainer<Mirror.STSOuter>.Cases<Swift.Int>.a\n
+      ▿ Mirror.STSContainer<Mirror.STSOuter>.Cases<Swift.Int>.a
+        - a: Mirror.STSOuter\n
       """)
 
     testSTSDump(STSContainer.Cases<Int>.b(.init()),

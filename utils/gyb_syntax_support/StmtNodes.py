@@ -1,5 +1,5 @@
-from Child import Child
-from Node import Node  # noqa: I201
+from .Child import Child
+from .Node import Node  # noqa: I201
 
 STMT_NODES = [
     # continue-stmt -> 'continue' label? ';'?
@@ -74,7 +74,8 @@ STMT_NODES = [
              Child('GuardResult', kind='Expr'),
          ]),
 
-    # for-in-stmt -> label? ':'? 'for' 'case'? pattern 'in' expr 'where'?
+    # for-in-stmt -> label? ':'? 
+    #   'for' 'try'? 'await'? 'case'? pattern 'in' expr 'where'?
     #   expr code-block ';'?
     Node('ForInStmt', kind='Stmt',
          traits=['WithCodeBlock', 'Labeled'],
@@ -84,6 +85,11 @@ STMT_NODES = [
              Child('LabelColon', kind='ColonToken',
                    is_optional=True),
              Child('ForKeyword', kind='ForToken'),
+             Child('TryKeyword', kind='TryToken', 
+                   is_optional=True),
+             Child('AwaitKeyword', kind='IdentifierToken',
+                   classification='Keyword',
+                   text_choices=['await'], is_optional=True),
              Child('CaseKeyword', kind='CaseToken',
                    is_optional=True),
              Child('Pattern', kind='Pattern'),
@@ -176,6 +182,10 @@ STMT_NODES = [
     # case-item-list -> case-item case-item-list?
     Node('CaseItemList', kind='SyntaxCollection',
          element='CaseItem'),
+
+    # catch-item-list -> catch-item catch-item-list?
+    Node('CatchItemList', kind='SyntaxCollection',
+         element='CatchItem'),
 
     # condition -> expression
     #            | availability-condition
@@ -315,6 +325,17 @@ STMT_NODES = [
                    is_optional=True),
          ]),
 
+    # catch-item -> pattern? where-clause? ','?
+    Node('CatchItem', kind='Syntax',
+         traits=['WithTrailingComma'],
+         children=[
+             Child('Pattern', kind='Pattern', is_optional=True),
+             Child('WhereClause', kind='WhereClause',
+                   is_optional=True),
+             Child('TrailingComma', kind='CommaToken',
+                   is_optional=True),
+         ]),
+
     # switch-case-label -> 'case' case-item-list ':'
     Node('SwitchCaseLabel', kind='Syntax',
          children=[
@@ -324,14 +345,13 @@ STMT_NODES = [
              Child('Colon', kind='ColonToken'),
          ]),
 
-    # catch-clause 'catch' pattern? where-clause? code-block
+    # catch-clause 'catch' case-item-list? code-block
     Node('CatchClause', kind='Syntax',
+         traits=['WithCodeBlock'],
          children=[
              Child('CatchKeyword', kind='CatchToken'),
-             Child('Pattern', kind='Pattern',
-                   is_optional=True),
-             Child('WhereClause', kind='WhereClause',
-                   is_optional=True),
+             Child('CatchItems', kind='CatchItemList',
+                   collection_element_name='CatchItem', is_optional=True),
              Child('Body', kind='CodeBlock'),
          ]),
 

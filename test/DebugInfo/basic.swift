@@ -42,14 +42,13 @@ public
 func foo(_ a: Int64, _ b: Int64) -> Int64 {
      var a = a
      var b = b
-     // CHECK-DAG: !DILexicalBlock(scope: ![[FOO]],{{.*}} line: [[@LINE-3]]
-     // CHECK-DAG: ![[ASCOPE:.*]] = !DILocation(line: [[@LINE-4]],{{.*}} scope: ![[FOO]])
+     // CHECK-DAG: ![[ALOC:.*]] = !DILocation(line: [[@LINE-3]],{{.*}} scope: ![[FOO]])
      // Check that a is the first and b is the second argument.
      // CHECK-DAG: store i64 %0, i64* [[AADDR:.*]], align
      // CHECK-DAG: store i64 %1, i64* [[BADDR:.*]], align
      // CHECK-DAG: [[AVAL:%.*]] = getelementptr inbounds {{.*}}, [[AMEM:.*]], i32 0, i32 0
      // CHECK-DAG: [[BVAL:%.*]] = getelementptr inbounds {{.*}}, [[BMEM:.*]], i32 0, i32 0
-     // CHECK-DAG: call void @llvm.dbg.declare(metadata i64* [[AADDR]], metadata ![[AARG:.*]], metadata !DIExpression()), !dbg ![[ASCOPE]]
+     // CHECK-DAG: call void @llvm.dbg.declare(metadata i64* [[AADDR]], metadata ![[AARG:.*]], metadata !DIExpression()), !dbg ![[ALOC]]
      // CHECK-DAG: call void @llvm.dbg.declare(metadata i64* [[BADDR]], metadata ![[BARG:.*]], metadata !DIExpression())
      // CHECK-DAG: ![[AARG]] = !DILocalVariable(name: "a", arg: 1
      // CHECK-DAG: ![[BARG]] = !DILocalVariable(name: "b", arg: 2
@@ -85,7 +84,7 @@ func foo(_ a: Int64, _ b: Int64) -> Int64 {
 // CHECK-DAG: ![[MAINMODULE]] = !DIModule({{.*}}, name: "basic"
 
 // DWARF Version
-// DWARF-CHECK-DAG:  i32 2, !"Dwarf Version", i32 4}
+// DWARF-CHECK-DAG:  i32 7, !"Dwarf Version", i32 4}
 // CV-CHECK-DAG: i32 2, !"CodeView", i32 1}
 
 // Debug Info Version

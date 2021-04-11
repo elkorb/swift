@@ -18,6 +18,7 @@
 #include "swift/AST/ASTContext.h"
 #include "swift/AST/Decl.h"
 #include "swift/AST/ExistentialLayout.h"
+#include "swift/AST/GenericParamList.h"
 #include "swift/AST/LazyResolver.h"
 #include "swift/AST/Module.h"
 #include "swift/AST/NameLookup.h"
@@ -140,7 +141,7 @@ void ConformanceLookupTable::destroy() {
 }
 
 namespace {
-  using ConformanceConstructionInfo = std::pair<SourceLoc, ProtocolDecl *>;
+  using ConformanceConstructionInfo = Located<ProtocolDecl *>;
 }
 
 template<typename NominalFunc, typename ExtensionFunc>
@@ -194,14 +195,14 @@ void ConformanceLookupTable::forEachInStage(ConformanceStage stage,
       loader.first->loadAllConformances(next, loader.second, conformances);
       loadAllConformances(next, conformances);
       for (auto conf : conformances) {
-        protocols.push_back({SourceLoc(), conf->getProtocol()});
+        protocols.push_back({conf->getProtocol(), SourceLoc()});
       }
     } else if (next->getParentSourceFile()) {
       bool anyObject = false;
       for (const auto &found :
                getDirectlyInheritedNominalTypeDecls(next, anyObject)) {
-        if (auto proto = dyn_cast<ProtocolDecl>(found.second))
-          protocols.push_back({found.first, proto});
+        if (auto proto = dyn_cast<ProtocolDecl>(found.Item))
+          protocols.push_back({proto, found.Loc});
       }
     }
 
@@ -281,7 +282,7 @@ void ConformanceLookupTable::updateLookupTable(NominalTypeDecl *nominal,
           // its inherited protocols directly.
           auto source = ConformanceSource::forExplicit(ext);
           for (auto locAndProto : protos)
-            addProtocol(locAndProto.second, locAndProto.first, source);
+            addProtocol(locAndProto.Item, locAndProto.Loc, source);
         });
     break;
 
@@ -464,14 +465,14 @@ bool ConformanceLookupTable::addProtocol(ProtocolDecl *protocol, SourceLoc loc,
 }
 
 void ConformanceLookupTable::addInheritedProtocols(
-                          llvm::PointerUnion<TypeDecl *, ExtensionDecl *> decl,
-                          ConformanceSource source) {
+    llvm::PointerUnion<const TypeDecl *, const ExtensionDecl *> decl,
+    ConformanceSource source) {
   // Find all of the protocols in the inheritance list.
   bool anyObject = false;
   for (const auto &found :
           getDirectlyInheritedNominalTypeDecls(decl, anyObject)) {
-    if (auto proto = dyn_cast<ProtocolDecl>(found.second))
-      addProtocol(proto, found.first, source);
+    if (auto proto = dyn_cast<ProtocolDecl>(found.Item))
+      addProtocol(proto, found.Loc, source);
   }
 }
 
@@ -954,9 +955,7 @@ bool ConformanceLookupTable::lookupConformance(
 void ConformanceLookupTable::lookupConformances(
        NominalTypeDecl *nominal,
        DeclContext *dc,
-       ConformanceLookupKind lookupKind,
-       SmallVectorImpl<ProtocolDecl *> *protocols,
-       SmallVectorImpl<ProtocolConformance *> *conformances,
+       std::vector<ProtocolConformance *> *conformances,
        SmallVectorImpl<ConformanceDiagnostic> *diagnostics) {
   // We need to expand all implied conformances before we can find
   // those conformances that pertain to this declaration context.
@@ -978,36 +977,6 @@ void ConformanceLookupTable::lookupConformances(
                    [&](ConformanceEntry *entry) {
                      if (entry->isSuperseded())
                        return true;
-
-                     // If we are to filter out this result, do so now.
-                     switch (lookupKind) {
-                     case ConformanceLookupKind::OnlyExplicit:
-                       switch (entry->getKind()) {
-                       case ConformanceEntryKind::Explicit:
-                       case ConformanceEntryKind::Synthesized:
-                         break;
-                       case ConformanceEntryKind::Implied:
-                       case ConformanceEntryKind::Inherited:
-                         return false;
-                       }
-                       break;
-                     case ConformanceLookupKind::NonInherited:
-                       switch (entry->getKind()) {
-                       case ConformanceEntryKind::Explicit:
-                       case ConformanceEntryKind::Synthesized:
-                       case ConformanceEntryKind::Implied:
-                         break;
-                       case ConformanceEntryKind::Inherited:
-                         return false;
-                       }
-                       break;
-                     case ConformanceLookupKind::All:
-                       break;
-                     }
-
-                     // Record the protocol.
-                     if (protocols)
-                       protocols->push_back(entry->getProtocol());
 
                      // Record the conformance.
                      if (conformances) {

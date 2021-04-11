@@ -108,8 +108,8 @@
 /// `load(fromByteOffset:as:)` method to read values.
 ///
 ///     let rawPointer = UnsafeRawPointer(uint64Pointer)
-///     fullInteger = rawPointer.load(as: UInt64.self)   // OK
-///     firstByte = rawPointer.load(as: UInt8.self)      // OK
+///     let fullInteger = rawPointer.load(as: UInt64.self)   // OK
+///     let firstByte = rawPointer.load(as: UInt8.self)      // OK
 ///
 /// Performing Typed Pointer Arithmetic
 /// ===================================
@@ -205,7 +205,7 @@
 ///       let numberPointer = UnsafePointer<Int>(&number)
 ///       // Accessing 'numberPointer' is undefined behavior.
 @frozen // unsafe-performance
-public struct UnsafePointer<Pointee>: _Pointer {
+public struct UnsafePointer<Pointee>: _Pointer, Sendable {
 
   /// A type that represents the distance between two pointers.
   public typealias Distance = Int
@@ -260,7 +260,7 @@ public struct UnsafePointer<Pointee>: _Pointer {
   /// pointer to `Int64`, then accesses a property on the signed integer.
   ///
   ///     let uint64Pointer: UnsafePointer<UInt64> = fetchValue()
-  ///     let isNegative = uint64Pointer.withMemoryRebound(to: Int64.self) { ptr in
+  ///     let isNegative = uint64Pointer.withMemoryRebound(to: Int64.self, capacity: 1) { ptr in
   ///         return ptr.pointee < 0
   ///     }
   ///
@@ -430,8 +430,8 @@ public struct UnsafePointer<Pointee>: _Pointer {
 /// to read and write values.
 ///
 ///     let rawPointer = UnsafeMutableRawPointer(uint64Pointer)
-///     fullInteger = rawPointer.load(as: UInt64.self)   // OK
-///     firstByte = rawPointer.load(as: UInt8.self)      // OK
+///     let fullInteger = rawPointer.load(as: UInt64.self)   // OK
+///     let firstByte = rawPointer.load(as: UInt8.self)      // OK
 ///
 /// Performing Typed Pointer Arithmetic
 /// ===================================
@@ -511,7 +511,7 @@ public struct UnsafePointer<Pointee>: _Pointer {
 ///       let numberPointer = UnsafeMutablePointer<Int>(&number)
 ///       // Accessing 'numberPointer' is undefined behavior.
 @frozen // unsafe-performance
-public struct UnsafeMutablePointer<Pointee>: _Pointer {
+public struct UnsafeMutablePointer<Pointee>: _Pointer, Sendable {
 
   /// A type that represents the distance between two pointers.
   public typealias Distance = Int
@@ -911,7 +911,7 @@ public struct UnsafeMutablePointer<Pointee>: _Pointer {
   /// pointer to `Int64`, then accesses a property on the signed integer.
   ///
   ///     let uint64Pointer: UnsafeMutablePointer<UInt64> = fetchValue()
-  ///     let isNegative = uint64Pointer.withMemoryRebound(to: Int64.self) { ptr in
+  ///     let isNegative = uint64Pointer.withMemoryRebound(to: Int64.self, capacity: 1) { ptr in
   ///         return ptr.pointee < 0
   ///     }
   ///

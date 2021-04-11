@@ -18,14 +18,11 @@
 #ifndef SWIFT_SIL_SILTYPE_H
 #define SWIFT_SIL_SILTYPE_H
 
-#include "swift/AST/CanTypeVisitor.h"
+#include "swift/AST/SILLayout.h"
 #include "swift/AST/Types.h"
 #include "llvm/ADT/PointerIntPair.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "swift/SIL/SILAllocated.h"
-#include "swift/SIL/SILArgumentConvention.h"
 #include "llvm/ADT/Hashing.h"
-#include "swift/SIL/SILDeclRef.h"
 
 namespace swift {
 
@@ -294,7 +291,7 @@ public:
 
   /// Returns true if the referenced type is a function type that never
   /// returns.
-  bool isNoReturnFunction(SILModule &M) const;
+  bool isNoReturnFunction(SILModule &M, TypeExpansionContext context) const;
 
   /// Returns true if the referenced AST type has reference semantics, even if
   /// the lowered SIL type is known to be trivial.
@@ -380,6 +377,11 @@ public:
   bool hasArchetype() const {
     return getASTType()->hasArchetype();
   }
+
+  /// True if the type involves any opaque archetypes.
+  bool hasOpaqueArchetype() const {
+    return getASTType()->hasOpaqueArchetype();
+  }
   
   /// Returns the ASTContext for the referenced Swift type.
   ASTContext &getASTContext() const {
@@ -427,6 +429,17 @@ public:
   SILType getEnumElementType(EnumElementDecl *elt, SILModule &M,
                              TypeExpansionContext context) const;
 
+  /// Given that this is an enum type, return the lowered type of the
+  /// data for the given element.  Applies substitutions as necessary.
+  /// The result will have the same value category as the base type.
+  ///
+  /// NOTE: Takes the type expansion context from \p fn.
+  SILType getEnumElementType(EnumElementDecl *elt, SILFunction *fn) const;
+
+  /// Given that this is an enum type, return true if this type is effectively
+  /// exhausted.
+  bool isEffectivelyExhaustiveEnumType(SILFunction *f);
+
   /// Given that this is a tuple type, return the lowered type of the
   /// given tuple element.  The result will have the same value
   /// category as the base type.
@@ -459,6 +472,24 @@ public:
     return SILType(getASTType().getReferenceStorageReferent(), getCategory());
   }
 
+  /// Return the reference ownership of this type if it is a reference storage
+  /// type. Otherwse, return None.
+  Optional<ReferenceOwnership> getReferenceStorageOwnership() const {
+    auto type = getASTType()->getAs<ReferenceStorageType>();
+    if (!type)
+      return None;
+    return type->getOwnership();
+  }
+
+  /// Attempt to wrap the passed in type as a type with reference ownership \p
+  /// ownership. For simplicity, we always return an address since reference
+  /// storage types may not be loadable (e.x.: weak ownership).
+  SILType getReferenceStorageType(const ASTContext &ctx,
+                                  ReferenceOwnership ownership) const {
+    auto *type = ReferenceStorageType::get(getASTType(), ownership, ctx);
+    return SILType::getPrimitiveAddressType(type->getCanonicalType());
+  }
+
   /// Transform the function type SILType by replacing all of its interface
   /// generic args with the appropriate item from the substitution.
   ///
@@ -486,6 +517,8 @@ public:
   SILType subst(Lowering::TypeConverter &tc, SubstitutionMap subs) const;
 
   SILType subst(SILModule &M, SubstitutionMap subs) const;
+  SILType subst(SILModule &M, SubstitutionMap subs,
+                TypeExpansionContext context) const;
 
   /// Return true if this type references a "ref" type that has a single pointer
   /// representation. Class existentials do not always qualify.
@@ -514,6 +547,11 @@ public:
   /// Returns a SILType with any archetypes mapped out of context.
   SILType mapTypeOutOfContext() const;
 
+  /// Given a lowered type (but without any particular value category),
+  /// map it out of its current context.  Equivalent to
+  /// SILType::getPrimitiveObjectType(type).mapTypeOutOfContext().getASTType().
+  static CanType mapTypeOutOfContext(CanType type);
+
   /// Given two SIL types which are representations of the same type,
   /// check whether they have an abstraction difference.
   bool hasAbstractionDifference(SILFunctionTypeRepresentation rep,
@@ -523,6 +561,16 @@ public:
   /// formal type. Meant for verification purposes/assertions.
   bool isLoweringOf(TypeExpansionContext context, SILModule &M,
                     CanType formalType);
+
+  /// Returns true if this SILType is a differentiable type.
+  bool isDifferentiable(SILModule &M) const;
+
+  /// If this is a SILBoxType, return getSILBoxFieldType(). Otherwise, return
+  /// SILType().
+  ///
+  /// \p field Return the type of the ith field of the box. Default set to 0
+  /// since we only support one field today. This is just future proofing.
+  SILType getSILBoxFieldType(const SILFunction *f, unsigned field = 0);
 
   /// Returns the hash code for the SILType.
   llvm::hash_code getHashCode() const {
@@ -581,7 +629,8 @@ public:
 
   std::string getAsString() const;
   void dump() const;
-  void print(raw_ostream &OS) const;
+  void print(raw_ostream &OS,
+             const PrintOptions &PO = PrintOptions::printSIL()) const;
 };
 
 // Statically prevent SILTypes from being directly cast to a type
@@ -591,17 +640,18 @@ template<> Can##ID##Type SILType::getAs<ID##Type>() const = delete;  \
 template<> Can##ID##Type SILType::castTo<ID##Type>() const = delete; \
 template<> bool SILType::is<ID##Type>() const = delete;
 NON_SIL_TYPE(Function)
+NON_SIL_TYPE(GenericFunction)
 NON_SIL_TYPE(AnyFunction)
 NON_SIL_TYPE(LValue)
+NON_SIL_TYPE(InOut)
 #undef NON_SIL_TYPE
 
-CanSILFunctionType getNativeSILFunctionType(
-    Lowering::TypeConverter &TC, TypeExpansionContext context,
-    Lowering::AbstractionPattern origType, CanAnyFunctionType substType,
-    Optional<SILDeclRef> origConstant = None,
-    Optional<SILDeclRef> constant = None,
-    Optional<SubstitutionMap> reqtSubs = None,
-    ProtocolConformanceRef witnessMethodConformance = ProtocolConformanceRef());
+#define TYPE(ID, PARENT)
+#define UNCHECKED_TYPE(ID, PARENT)                                   \
+template<> Can##ID##Type SILType::getAs<ID##Type>() const = delete;  \
+template<> Can##ID##Type SILType::castTo<ID##Type>() const = delete; \
+template<> bool SILType::is<ID##Type>() const = delete;
+#include "swift/AST/TypeNodes.def"
 
 inline llvm::raw_ostream &operator<<(llvm::raw_ostream &OS, SILType T) {
   T.print(OS);

@@ -45,16 +45,17 @@ public:
 
   // Only handle callbacks for suffix completions.
   // {
-  void completeDotExpr(Expr *E, SourceLoc DotLoc) override;
+  void completeDotExpr(CodeCompletionExpr *E, SourceLoc DotLoc) override;
   void completePostfixExpr(Expr *E, bool hasSpace) override;
   // }
 
   void doneParsing() override;
 };
 
-void ConformingMethodListCallbacks::completeDotExpr(Expr *E, SourceLoc DotLoc) {
+void ConformingMethodListCallbacks::completeDotExpr(CodeCompletionExpr *E,
+                                                    SourceLoc DotLoc) {
   CurDeclContext = P.CurDeclContext;
-  ParsedExpr = E;
+  ParsedExpr = E->getBase();
 }
 
 void ConformingMethodListCallbacks::completePostfixExpr(Expr *E,
@@ -67,9 +68,7 @@ void ConformingMethodListCallbacks::doneParsing() {
   if (!ParsedExpr)
     return;
 
-  typeCheckContextUntil(
-      CurDeclContext,
-      CurDeclContext->getASTContext().SourceMgr.getCodeCompletionLoc());
+  typeCheckContextAt(CurDeclContext, ParsedExpr->getLoc());
 
   Type T = ParsedExpr->getType();
 
@@ -91,6 +90,11 @@ void ConformingMethodListCallbacks::doneParsing() {
   if (T->hasArchetype())
     T = T->mapTypeOutOfContext();
 
+  // If there are no (instance) members for this type, bail.
+  if (!T->mayHaveMembers() || T->is<ModuleType>()) {
+    return;
+  }
+
   llvm::SmallPtrSet<ProtocolDecl*, 8> expectedProtocols;
   for (auto Name: ExpectedTypeNames) {
     if (auto *PD = resolveProtocolName(CurDeclContext, Name)) {
@@ -108,8 +112,7 @@ void ConformingMethodListCallbacks::doneParsing() {
 void ConformingMethodListCallbacks::getMatchingMethods(
     Type T, llvm::SmallPtrSetImpl<ProtocolDecl*> &expectedTypes,
     SmallVectorImpl<ValueDecl *> &result) {
-  if (!T->mayHaveMembers())
-    return;
+  assert(T->mayHaveMembers() && !T->is<ModuleType>());
 
   class LocalConsumer : public VisibleDeclConsumer {
     ModuleDecl *CurModule;
@@ -156,7 +159,7 @@ void ConformingMethodListCallbacks::getMatchingMethods(
           Result(result) {}
 
     void foundDecl(ValueDecl *VD, DeclVisibilityKind reason,
-                   DynamicLookupInfo) {
+                   DynamicLookupInfo) override {
       if (isMatchingMethod(VD) && !VD->shouldHideFromEditor())
         Result.push_back(VD);
     }
@@ -164,7 +167,9 @@ void ConformingMethodListCallbacks::getMatchingMethods(
   } LocalConsumer(CurDeclContext, T, expectedTypes, result);
 
   lookupVisibleMemberDecls(LocalConsumer, MetatypeType::get(T), CurDeclContext,
-                           /*includeInstanceMembers=*/false);
+                           /*includeInstanceMembers=*/false,
+                           /*includeDerivedRequirements*/false,
+                           /*includeProtocolExtensionMembers*/true);
 }
 
 } // anonymous namespace.
@@ -188,7 +193,7 @@ void PrintingConformingMethodListConsumer::handleResult(
     auto resultTy = funcTy->castTo<FunctionType>()->getResult();
 
     OS << "   - Name: ";
-    VD->getFullName().print(OS);
+    VD->getName().print(OS);
     OS << "\n";
 
     OS << "     TypeName: ";

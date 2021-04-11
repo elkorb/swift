@@ -97,6 +97,10 @@ macro(swift_common_standalone_build_config_llvm product)
     endif()
   endif()
 
+  if(LLVM_ENABLE_ZLIB)
+   find_package(ZLIB REQUIRED)
+  endif()
+
   include(AddLLVM)
   include(AddSwiftTableGen) # This imports TableGen from LLVM.
   include(HandleLLVMOptions)
@@ -159,7 +163,7 @@ endmacro()
 macro(swift_common_standalone_build_config_clang product)
   find_package(Clang CONFIG REQUIRED NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
 
-  if (NOT CMAKE_CROSSCOMPILING)
+  if (NOT CMAKE_CROSSCOMPILING AND NOT SWIFT_PREBUILT_CLANG)
     set(${product}_NATIVE_CLANG_TOOLS_PATH "${LLVM_TOOLS_BINARY_DIR}")
   endif()
 
@@ -193,7 +197,7 @@ macro(swift_common_standalone_build_config_cmark product)
   include_directories("${CMARK_MAIN_INCLUDE_DIR}"
                       "${CMARK_BUILD_INCLUDE_DIR}")
 
-  include(${PATH_TO_CMARK_BUILD}/src/CMarkExports.cmake)
+  include(${PATH_TO_CMARK_BUILD}/src/cmarkTargets.cmake)
   add_definitions(-DCMARK_STATIC_DEFINE)
 endmacro()
 

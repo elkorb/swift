@@ -103,10 +103,9 @@ func basicSubtyping(
   let _: P3 = baseAndP2 // expected-error {{value of type 'Base<Int> & P2' does not conform to specified type 'P3'}}
   let _: Derived = baseAndP1 // expected-error {{cannot convert value of type 'Base<Int> & P1' to specified type 'Derived'}}
   let _: Derived = baseAndP2 // expected-error {{cannot convert value of type 'Base<Int> & P2' to specified type 'Derived'}}
-  let _: Derived & P2 = baseAndP2 // expected-error {{value of type 'Base<Int> & P2' does not conform to specified type 'Derived & P2'}}
+  let _: Derived & P2 = baseAndP2 // expected-error {{cannot convert value of type 'Base<Int> & P2' to specified type 'Derived'}}
 
-  // TODO(diagnostics): Diagnostic regression, better message is `value of type 'Unrelated' does not conform to 'Derived & P2' in coercion`
-  let _ = Unrelated() as Derived & P2 // expected-error {{cannot convert value of type 'Unrelated' to type 'Derived' in coercion}}
+  let _ = Unrelated() as Derived & P2 // expected-error {{value of type 'Unrelated' does not conform to 'Derived & P2' in coercion}}
   let _ = Unrelated() as? Derived & P2 // expected-warning {{always fails}}
   let _ = baseAndP2 as Unrelated // expected-error {{cannot convert value of type 'Base<Int> & P2' to type 'Unrelated' in coercion}}
   let _ = baseAndP2 as? Unrelated // expected-warning {{always fails}}
@@ -115,7 +114,8 @@ func basicSubtyping(
   // let _ = Unrelated() as AnyObject
   // let _ = Unrelated() as? AnyObject
 
-  let _ = anyObject as Unrelated // expected-error {{'AnyObject' is not convertible to 'Unrelated'; did you mean to use 'as!' to force downcast?}}
+  let _ = anyObject as Unrelated // expected-error {{'AnyObject' is not convertible to 'Unrelated'}}
+  //expected-note@-1 {{did you mean to use 'as!' to force downcast?}} {{21-23=as!}}
   let _ = anyObject as? Unrelated
 
   // No-ops
@@ -200,13 +200,16 @@ func basicSubtyping(
   let _: Base<Int> & P2 = baseAndP2.protocolSelfReturn()
 
   // Downcasts
-  let _ = baseAndP2 as Derived // expected-error {{did you mean to use 'as!' to force downcast?}}
+  let _ = baseAndP2 as Derived //expected-error {{'Base<Int> & P2' is not convertible to 'Derived'}}
+  // expected-note@-1 {{did you mean to use 'as!' to force downcast?}} {{21-23=as!}}
   let _ = baseAndP2 as? Derived
   
-  let _ = baseAndP2 as Derived & P3 // expected-error {{did you mean to use 'as!' to force downcast?}}
+  let _ = baseAndP2 as Derived & P3 // expected-error {{'Base<Int> & P2' is not convertible to 'Derived & P3'}}
+  // expected-note@-1 {{did you mean to use 'as!' to force downcast?}} {{21-23=as!}}
   let _ = baseAndP2 as? Derived & P3
 
-  let _ = base as Derived & P2 // expected-error {{did you mean to use 'as!' to force downcast?}}
+  let _ = base as Derived & P2 //expected-error {{'Base<Int>' is not convertible to 'Derived & P2'}}
+  // expected-note@-1 {{did you mean to use 'as!' to force downcast?}}
   let _ = base as? Derived & P2
 
   // Invalid cases
@@ -414,7 +417,8 @@ func conformsTo<T1 : P2, T2 : Base<Int> & P2>(
   // expected-error@-1 {{global function 'conformsToAnyObject' requires that 'P1' be a class type}}
 
   conformsToP1(p1)
-  // expected-error@-1 {{value of protocol type 'P1' cannot conform to 'P1'; only struct/enum/class types can conform to protocols}}
+  // expected-error@-1 {{protocol 'P1' as a type cannot conform to the protocol itself}}
+  // expected-note@-2 {{only concrete types such as structs, enums and classes can conform to protocols}}
 
   // FIXME: Following diagnostics are not great because when
   // `conformsTo*` methods are re-typechecked, they loose information

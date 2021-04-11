@@ -21,10 +21,16 @@ SWIFT_REQUEST(NameLookup, AnyObjectLookupRequest,
 SWIFT_REQUEST(NameLookup, CustomAttrNominalRequest,
               NominalTypeDecl *(CustomAttr *, DeclContext *), Cached,
               NoLocationInfo)
-SWIFT_REQUEST(NameLookup, ExpandASTScopeRequest,
-              ast_scope::ASTScopeImpl* (ast_scope::ASTScopeImpl*, ast_scope::ScopeCreator*),
-              SeparatelyCached,
+SWIFT_REQUEST(NameLookup, DirectLookupRequest,
+              TinyPtrVector<ValueDecl *>(DirectLookupDescriptor), Uncached,
               NoLocationInfo)
+SWIFT_REQUEST(NameLookup, DirectOperatorLookupRequest,
+              TinyPtrVector<OperatorDecl *>(OperatorLookupDescriptor,
+                                            OperatorFixity),
+              Uncached, NoLocationInfo)
+SWIFT_REQUEST(NameLookup, DirectPrecedenceGroupLookupRequest,
+              TinyPtrVector<PrecedenceGroupDecl *>(OperatorLookupDescriptor),
+              Uncached, NoLocationInfo)
 SWIFT_REQUEST(NameLookup, ExtendedNominalRequest,
               NominalTypeDecl *(ExtensionDecl *), SeparatelyCached,
               NoLocationInfo)
@@ -35,8 +41,15 @@ SWIFT_REQUEST(NameLookup, GetDestructorRequest, DestructorDecl *(ClassDecl *),
               SeparatelyCached, NoLocationInfo)
 SWIFT_REQUEST(NameLookup, InheritedDeclsReferencedRequest,
               DirectlyReferencedTypeDecls(
-                  llvm::PointerUnion<TypeDecl *, ExtensionDecl *>, unsigned),
+                  llvm::PointerUnion<const TypeDecl *,
+                                     const ExtensionDecl *>, unsigned),
               Uncached, HasNearestLocation)
+SWIFT_REQUEST(NameLookup, InheritedProtocolsRequest,
+              ArrayRef<ProtocolDecl *>(ProtocolDecl *), SeparatelyCached,
+              NoLocationInfo)
+SWIFT_REQUEST(NameLookup, LookupConformanceInModuleRequest,
+              ProtocolConformanceRef(LookupConformanceDescriptor),
+              Uncached, NoLocationInfo)
 SWIFT_REQUEST(NameLookup, LookupInModuleRequest,
               QualifiedLookupResult(const DeclContext *, DeclName, NLKind,
                                     namelookup::ResolutionKind,
@@ -52,9 +65,13 @@ SWIFT_REQUEST(NameLookup, QualifiedLookupRequest,
                   DeclNameRef, NLOptions),
               Uncached, NoLocationInfo)
 SWIFT_REQUEST(NameLookup, SelfBoundsFromWhereClauseRequest,
-              SelfBounds(llvm::PointerUnion<TypeDecl *, ExtensionDecl *>),
+              SelfBounds(llvm::PointerUnion<const TypeDecl *,
+                                            const ExtensionDecl *>),
               Uncached, NoLocationInfo)
 SWIFT_REQUEST(NameLookup, SuperclassDeclRequest, ClassDecl *(NominalTypeDecl *),
+              SeparatelyCached, NoLocationInfo)
+SWIFT_REQUEST(NameLookup, HasMissingDesignatedInitializersRequest,
+              bool(ClassDecl *),
               SeparatelyCached, NoLocationInfo)
 SWIFT_REQUEST(NameLookup, TypeDeclsFromWhereClauseRequest,
               DirectlyReferencedTypeDecls(ExtensionDecl *), Uncached,
@@ -65,3 +82,16 @@ SWIFT_REQUEST(NameLookup, UnderlyingTypeDeclsReferencedRequest,
 SWIFT_REQUEST(NameLookup, UnqualifiedLookupRequest,
               LookupResult(UnqualifiedLookupDescriptor), Uncached,
               NoLocationInfo)
+
+SWIFT_REQUEST(NameLookup, LookupPrefixOperatorRequest,
+              PrefixOperatorDecl *(OperatorLookupDescriptor),
+              Cached, NoLocationInfo)
+SWIFT_REQUEST(NameLookup, LookupInfixOperatorRequest,
+              TinyPtrVector<InfixOperatorDecl *>(OperatorLookupDescriptor),
+              Cached, NoLocationInfo)
+SWIFT_REQUEST(NameLookup, LookupPostfixOperatorRequest,
+              PostfixOperatorDecl *(OperatorLookupDescriptor),
+              Cached, NoLocationInfo)
+SWIFT_REQUEST(NameLookup, LookupPrecedenceGroupRequest,
+              TinyPtrVector<PrecedenceGroupDecl *>(OperatorLookupDescriptor),
+              Cached, NoLocationInfo)

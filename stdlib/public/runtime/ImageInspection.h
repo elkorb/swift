@@ -21,7 +21,6 @@
 #ifndef SWIFT_RUNTIME_IMAGEINSPECTION_H
 #define SWIFT_RUNTIME_IMAGEINSPECTION_H
 
-#include "ImageInspectionELF.h"
 #include <cstdint>
 #include <cstddef>
 #if defined(__cplusplus)
@@ -90,7 +89,6 @@ void addImageDynamicReplacementBlockCallback(const void *start, uintptr_t size,
                                              uintptr_t size2);
 
 int lookupSymbol(const void *address, SymbolInfo *info);
-void *lookupSection(const char *segment, const char *section, size_t *outSize);
 
 } // end namespace swift
 

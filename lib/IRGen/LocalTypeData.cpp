@@ -344,8 +344,9 @@ static void maybeEmitDebugInfoForLocalTypeData(IRGenFunction &IGF,
 
   llvm::Value *data = value.getMetadata();
 
-  // At -O0, create an alloca to keep the type alive.
-  if (!IGF.IGM.IRGen.Opts.shouldOptimize()) {
+  // At -O0, create an alloca to keep the type alive. Not for async functions
+  // though; see the comment in IRGenFunctionSIL::emitShadowCopyIfNeeded().
+  if (!IGF.IGM.IRGen.Opts.shouldOptimize() && !IGF.isAsync()) {
     auto alloca =
         IGF.createAlloca(data->getType(), IGF.IGM.getPointerAlignment(), name);
     IGF.Builder.CreateStore(data, alloca);
@@ -497,7 +498,7 @@ void LocalTypeDataCache::addAbstractForTypeMetadata(IRGenFunction &IGF,
     bool hasLimitedInterestingConformances(CanType type) const override {
       return false;
     }
-    GenericSignature::ConformsToArray
+    GenericSignature::RequiredProtocols
     getInterestingConformances(CanType type) const override {
       llvm_unreachable("no limits");
     }
@@ -560,7 +561,7 @@ addAbstractForFulfillments(IRGenFunction &IGF, FulfillmentMap &&fulfillments,
       // the type metadata for Int by chasing through N layers of metadata
       // just because that path happens to be in the cache.
       if (!type->hasArchetype() &&
-          isTypeMetadataAccessTrivial(IGF.IGM, type)) {
+          !shouldCacheTypeMetadataAccess(IGF.IGM, type)) {
         continue;
       }
 
@@ -708,6 +709,11 @@ void LocalTypeDataKind::print(llvm::raw_ostream &out) const {
     out << "ValueWitnessTable";
   } else {
     assert(isSingletonKind());
+    if (Value >= ValueWitnessDiscriminatorBase) {
+      auto witness = ValueWitness(Value - ValueWitnessDiscriminatorBase);
+      out << "Discriminator(" << getValueWitnessName(witness) << ")";
+      return;
+    }
     ValueWitness witness = ValueWitness(Value - ValueWitnessBase);
     out << getValueWitnessName(witness);
   }

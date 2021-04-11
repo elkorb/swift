@@ -10,16 +10,12 @@ endif()
 
 target_link_libraries(SwiftSyntaxParserTests
   PRIVATE
-  libSwiftSyntaxParser)
+  libSwiftSyntaxParser
+  swiftSyntax)
 
-if(APPLE)
-  # Prioritize finding the parser library from the build/lib directory.
-  # Otherwise it may find it from the 'lib/swift/macosx' directory which could
-  # be out-of-date.
-  get_target_property(link_flags SwiftSyntaxParserTests LINK_FLAGS)
-  set(link_flags "-Xlinker -rpath -Xlinker ${SWIFT_LIBRARY_OUTPUT_INTDIR} ${link_flags}")
-  set_property(TARGET SwiftSyntaxParserTests PROPERTY
-      LINK_FLAGS "${link_flags}")
+if(CMAKE_SYSTEM_NAME STREQUAL Darwin)
+  set_target_properties(SwiftSyntaxParserTests PROPERTIES
+    BUILD_RPATH ${SWIFT_LIBRARY_OUTPUT_INTDIR})
 endif()
 
 set_property(TARGET SwiftSyntaxParserTests APPEND_STRING PROPERTY

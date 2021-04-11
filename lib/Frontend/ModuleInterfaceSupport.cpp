@@ -18,6 +18,7 @@
 #include "swift/AST/ExistentialLayout.h"
 #include "swift/AST/FileSystem.h"
 #include "swift/AST/Module.h"
+#include "swift/AST/ModuleNameLookup.h"
 #include "swift/AST/ProtocolConformance.h"
 #include "swift/Basic/STLExtras.h"
 #include "swift/Frontend/Frontend.h"
@@ -28,6 +29,7 @@
 #include "swift/Serialization/Validation.h"
 #include "clang/Basic/Module.h"
 #include "llvm/ADT/Hashing.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Regex.h"
@@ -35,24 +37,9 @@
 
 using namespace swift;
 
-version::Version swift::InterfaceFormatVersion({1, 0});
+// MARK: Module interface header comments
 
-/// Diagnose any scoped imports in \p imports, i.e. those with a non-empty
-/// access path. These are not yet supported by module interfaces, since the
-/// information about the declaration kind is not preserved through the binary
-/// serialization that happens as an intermediate step in non-whole-module
-/// builds.
-///
-/// These come from declarations like `import class FooKit.MainFooController`.
-static void diagnoseScopedImports(DiagnosticEngine &diags,
-                                  ArrayRef<ModuleDecl::ImportedModule> imports){
-  for (const ModuleDecl::ImportedModule &importPair : imports) {
-    if (importPair.first.empty())
-      continue;
-    diags.diagnose(importPair.first.front().second,
-                   diag::module_interface_scoped_import_unsupported);
-  }
-}
+version::Version swift::InterfaceFormatVersion({1, 0});
 
 /// Prints to \p out a comment containing a format version number, tool version
 /// string as well as any relevant command-line flags in \p Opts used to
@@ -61,14 +48,20 @@ static void printToolVersionAndFlagsComment(raw_ostream &out,
                                             ModuleInterfaceOptions const &Opts,
                                             ModuleDecl *M) {
   auto &Ctx = M->getASTContext();
-  auto ToolsVersion = swift::version::getSwiftFullVersion(
-      Ctx.LangOpts.EffectiveLanguageVersion);
+  auto ToolsVersion =
+      getSwiftInterfaceCompilerVersionForCurrentCompiler(Ctx);
   out << "// " SWIFT_INTERFACE_FORMAT_VERSION_KEY ": "
       << InterfaceFormatVersion << "\n";
   out << "// " SWIFT_COMPILER_VERSION_KEY ": "
       << ToolsVersion << "\n";
   out << "// " SWIFT_MODULE_FLAGS_KEY ": "
       << Opts.Flags << "\n";
+}
+
+std::string
+swift::getSwiftInterfaceCompilerVersionForCurrentCompiler(ASTContext &ctx) {
+  return swift::version::getSwiftFullVersion(
+             ctx.LangOpts.EffectiveLanguageVersion);
 }
 
 llvm::Regex swift::getSwiftInterfaceFormatVersionRegex() {
@@ -81,51 +74,195 @@ llvm::Regex swift::getSwiftInterfaceModuleFlagsRegex() {
                      llvm::Regex::Newline);
 }
 
+llvm::Regex swift::getSwiftInterfaceCompilerVersionRegex() {
+  return llvm::Regex("^// " SWIFT_COMPILER_VERSION_KEY
+                     ": (.+)$", llvm::Regex::Newline);
+}
+
+// MARK: Module name shadowing warnings (SR-898)
+//
+// When swiftc emits a module interface, it qualifies most types with their
+// module name. This usually makes the interface less ambiguous, but if a type
+// exists with the same name as a module, then references to that module will
+// incorrectly look inside the type instead. This breakage is not obvious until
+// someone tries to load the module interface, and may sometimes only occur in
+// clients' module interfaces.
+//
+// Truly fixing this will require a new module-qualification syntax which
+// completely ignores shadowing. In lieu of that, we detect and warn about three
+// common examples which are relatively actionable:
+//
+// 1. An `import` statement written into the module interface will
+//    (transitively) import a type with the module interface's name.
+//
+// 2. The module interface declares a type with the same name as the module the
+//    interface is for.
+//
+// 3. The module interface declares a type with the same name as a module it has
+//     (transitively) imported without `@_implementationOnly`.
+//
+// We do not check for shadowing between imported module names and imported
+// declarations; this is both much rarer and much more difficult to solve.
+// We silence these warnings if you use the temporary workaround flag,
+// '-module-interface-preserve-types-as-written'.
+
+/// Emit a warning explaining that \p shadowingDecl will interfere with
+/// references to types in \p shadowedModule in the module interfaces of
+/// \p brokenModule and its clients.
+static void
+diagnoseDeclShadowsModule(ModuleInterfaceOptions const &Opts,
+                          TypeDecl *shadowingDecl, ModuleDecl *shadowedModule,
+                          ModuleDecl *brokenModule) {
+  if (Opts.PreserveTypesAsWritten || shadowingDecl == shadowedModule)
+    return;
+
+  shadowingDecl->diagnose(
+      diag::warning_module_shadowing_may_break_module_interface,
+      shadowingDecl->getDescriptiveKind(),
+      FullyQualified<Type>(shadowingDecl->getDeclaredInterfaceType()),
+      shadowedModule, brokenModule);
+}
+
+/// Check whether importing \p importedModule will bring in any declarations
+/// that will shadow \p importingModule, and diagnose them if so.
+static void
+diagnoseIfModuleImportsShadowingDecl(ModuleInterfaceOptions const &Opts,
+                                     ModuleDecl *importedModule,
+                                     ModuleDecl *importingModule) {
+  using namespace namelookup;
+
+  SmallVector<ValueDecl *, 4> decls;
+  lookupInModule(importedModule, importingModule->getName(), decls,
+                 NLKind::UnqualifiedLookup, ResolutionKind::TypesOnly,
+                 importedModule,
+                 NL_UnqualifiedDefault | NL_IncludeUsableFromInline);
+  for (auto decl : decls)
+    diagnoseDeclShadowsModule(Opts, cast<TypeDecl>(decl), importingModule,
+                              importingModule);
+}
+
+/// Check whether \p D will shadow any modules imported by \p M, and diagnose
+/// them if so.
+static void diagnoseIfDeclShadowsKnownModule(ModuleInterfaceOptions const &Opts,
+                                             Decl *D, ModuleDecl *M) {
+  ASTContext &ctx = M->getASTContext();
+
+  // We only care about types (and modules, which are a subclass of TypeDecl);
+  // when the grammar expects a type name, it ignores non-types during lookup.
+  TypeDecl *TD = dyn_cast<TypeDecl>(D);
+  if (!TD)
+    return;
+
+  ModuleDecl *shadowedModule = ctx.getLoadedModule(TD->getName());
+  if (!shadowedModule || M->isImportedImplementationOnly(shadowedModule))
+    return;
+
+  diagnoseDeclShadowsModule(Opts, TD, shadowedModule, M);
+}
+
+// MARK: Import statements
+
+/// Diagnose any scoped imports in \p imports, i.e. those with a non-empty
+/// access path. These are not yet supported by module interfaces, since the
+/// information about the declaration kind is not preserved through the binary
+/// serialization that happens as an intermediate step in non-whole-module
+/// builds.
+///
+/// These come from declarations like `import class FooKit.MainFooController`.
+static void diagnoseScopedImports(DiagnosticEngine &diags,
+                                  ArrayRef<ImportedModule> imports){
+  for (const ImportedModule &importPair : imports) {
+    if (importPair.accessPath.empty())
+      continue;
+    diags.diagnose(importPair.accessPath.front().Loc,
+                   diag::module_interface_scoped_import_unsupported);
+  }
+}
+
 /// Prints the imported modules in \p M to \p out in the form of \c import
 /// source declarations.
-static void printImports(raw_ostream &out, ModuleDecl *M) {
+static void printImports(raw_ostream &out,
+                         ModuleInterfaceOptions const &Opts,
+                         ModuleDecl *M) {
   // FIXME: This is very similar to what's in Serializer::writeInputBlock, but
   // it's not obvious what higher-level optimization would be factored out here.
-  ModuleDecl::ImportFilter allImportFilter;
-  allImportFilter |= ModuleDecl::ImportFilterKind::Public;
-  allImportFilter |= ModuleDecl::ImportFilterKind::Private;
+  ModuleDecl::ImportFilter allImportFilter = {
+      ModuleDecl::ImportFilterKind::Exported,
+      ModuleDecl::ImportFilterKind::Default,
+      ModuleDecl::ImportFilterKind::SPIAccessControl};
 
-  SmallVector<ModuleDecl::ImportedModule, 8> allImports;
+  // With -experimental-spi-imports:
+  // When printing the private swiftinterface file, print implementation-only
+  // imports only if they are also SPI. First, list all implementation-only
+  // imports and filter them later.
+  llvm::SmallSet<ImportedModule, 4, ImportedModule::Order> ioiImportSet;
+  if (Opts.PrintSPIs && Opts.ExperimentalSPIImports) {
+    allImportFilter |= ModuleDecl::ImportFilterKind::ImplementationOnly;
+
+    SmallVector<ImportedModule, 4> ioiImport;
+    M->getImportedModules(ioiImport,
+                          ModuleDecl::ImportFilterKind::ImplementationOnly);
+    ioiImportSet.insert(ioiImport.begin(), ioiImport.end());
+  }
+
+  SmallVector<ImportedModule, 8> allImports;
   M->getImportedModules(allImports, allImportFilter);
-  ModuleDecl::removeDuplicateImports(allImports);
+  ImportedModule::removeDuplicates(allImports);
   diagnoseScopedImports(M->getASTContext().Diags, allImports);
 
   // Collect the public imports as a subset so that we can mark them with
   // '@_exported'.
-  SmallVector<ModuleDecl::ImportedModule, 8> publicImports;
-  M->getImportedModules(publicImports, ModuleDecl::ImportFilterKind::Public);
-  llvm::SmallSet<ModuleDecl::ImportedModule, 8,
-                 ModuleDecl::OrderImportedModules> publicImportSet;
+  SmallVector<ImportedModule, 8> publicImports;
+  M->getImportedModules(publicImports, ModuleDecl::ImportFilterKind::Exported);
+  llvm::SmallSet<ImportedModule, 8, ImportedModule::Order> publicImportSet;
+
   publicImportSet.insert(publicImports.begin(), publicImports.end());
 
   for (auto import : allImports) {
-    if (import.second->isOnoneSupportModule() ||
-        import.second->isBuiltinModule()) {
+    auto importedModule = import.importedModule;
+    if (importedModule->isOnoneSupportModule() ||
+        importedModule->isBuiltinModule()) {
       continue;
+    }
+
+    llvm::SmallSetVector<Identifier, 4> spis;
+    M->lookupImportedSPIGroups(importedModule, spis);
+
+    // Only print implementation-only imports which have an SPI import.
+    if (ioiImportSet.count(import)) {
+      if (spis.empty())
+        continue;
+      out << "@_implementationOnly ";
     }
 
     if (publicImportSet.count(import))
       out << "@_exported ";
+
+    // SPI attribute on imports
+    if (Opts.PrintSPIs) {
+      for (auto spiName : spis)
+        out << "@_spi(" << spiName << ") ";
+    }
+
     out << "import ";
-    import.second->getReverseFullModuleName().printForward(out);
+    importedModule->getReverseFullModuleName().printForward(out);
 
     // Write the access path we should be honoring but aren't.
     // (See diagnoseScopedImports above.)
-    if (!import.first.empty()) {
+    if (!import.accessPath.empty()) {
       out << "/*";
-      for (const auto &accessPathElem : import.first)
-        out << "." << accessPathElem.first;
+      for (const auto &accessPathElem : import.accessPath)
+        out << "." << accessPathElem.Item;
       out << "*/";
     }
 
     out << "\n";
+
+    diagnoseIfModuleImportsShadowingDecl(Opts, importedModule, M);
   }
 }
+
+// MARK: Dummy protocol conformances
 
 // FIXME: Copied from ASTPrinter.cpp...
 static bool isPublicOrUsableFromInline(const ValueDecl *VD) {
@@ -201,6 +338,23 @@ class InheritedProtocolCollector {
     return cache.getValue();
   }
 
+  static bool canPrintProtocolTypeNormally(Type type, const Decl *D) {
+    if (!isPublicOrUsableFromInline(type))
+      return false;
+
+    // Extensions and protocols can print marker protocols.
+    if (isa<ExtensionDecl>(D) || isa<ProtocolDecl>(D))
+      return true;
+
+    ExistentialLayout layout = type->getExistentialLayout();
+    for (ProtocolType *protoTy : layout.getProtocols()) {
+      if (protoTy->getDecl()->isMarkerProtocol())
+        return false;
+    }
+
+    return true;
+  }
+  
   /// For each type in \p directlyInherited, classify the protocols it refers to
   /// as included for printing or not, and record them in the appropriate
   /// vectors.
@@ -212,7 +366,7 @@ class InheritedProtocolCollector {
       if (!inheritedTy || !inheritedTy->isExistentialType())
         continue;
 
-      bool canPrintNormally = isPublicOrUsableFromInline(inheritedTy);
+      bool canPrintNormally = canPrintProtocolTypeNormally(inheritedTy, D);
       ExistentialLayout layout = inheritedTy->getExistentialLayout();
       for (ProtocolType *protoTy : layout.getProtocols()) {
         if (canPrintNormally)
@@ -270,21 +424,26 @@ public:
     const NominalTypeDecl *nominal;
     const IterableDeclContext *memberContext;
 
+    auto shouldInclude = [](const ExtensionDecl *extension) {
+      if (extension->isConstrainedExtension()) {
+        // Conditional conformances never apply to inherited protocols, nor
+        // can they provide unconditional conformances that might be used in
+        // other extensions.
+        return false;
+      }
+      return true;
+    };
     if ((nominal = dyn_cast<NominalTypeDecl>(D))) {
       directlyInherited = nominal->getInherited();
       memberContext = nominal;
 
     } else if (auto *extension = dyn_cast<ExtensionDecl>(D)) {
-      if (extension->isConstrainedExtension()) {
-        // Conditional conformances never apply to inherited protocols, nor
-        // can they provide unconditional conformances that might be used in
-        // other extensions.
+      if (!shouldInclude(extension)) {
         return;
       }
       nominal = extension->getExtendedNominal();
       directlyInherited = extension->getInherited();
       memberContext = extension;
-
     } else {
       return;
     }
@@ -293,6 +452,18 @@ public:
       return;
 
     map[nominal].recordProtocols(directlyInherited, D);
+    // Collect protocols inherited from super classes
+    if (auto *CD = dyn_cast<ClassDecl>(D)) {
+      for (auto *SD = CD->getSuperclassDecl(); SD;
+           SD = SD->getSuperclassDecl()) {
+        map[nominal].recordProtocols(SD->getInherited(), SD);
+        for (auto *Ext: SD->getExtensions()) {
+          if (shouldInclude(Ext)) {
+            map[nominal].recordProtocols(Ext->getInherited(), Ext);
+          }
+        }
+      }
+    }
 
     // Recurse to find any nested types.
     for (const Decl *member : memberContext->getMembers())
@@ -303,10 +474,16 @@ public:
   /// in \p map.
   ///
   /// \sa recordConditionalConformances
-  static void collectSkippedConditionalConformances(PerTypeMap &map,
-                                                    const Decl *D) {
+  static void collectSkippedConditionalConformances(
+                                            PerTypeMap &map,
+                                            const Decl *D,
+                                            const PrintOptions &printOptions) {
     auto *extension = dyn_cast<ExtensionDecl>(D);
     if (!extension || !extension->isConstrainedExtension())
+      return;
+
+    // Skip SPI extensions in the public interface.
+    if (!printOptions.PrintSPIs && extension->isSPI())
       return;
 
     const NominalTypeDecl *nominal = extension->getExtendedNominal();
@@ -341,6 +518,14 @@ public:
     if (ExtraProtocols.empty())
       return;
 
+    if (!printOptions.shouldPrint(nominal))
+      return;
+
+    /// is this nominal specifically an 'actor'?
+    bool actorClass = false;
+    if (auto klass = dyn_cast<ClassDecl>(nominal))
+      actorClass = klass->isActor();
+
     SmallPtrSet<ProtocolDecl *, 16> handledProtocols;
 
     // First record all protocols that have already been handled.
@@ -365,6 +550,18 @@ public:
         if (!handledProtocols.insert(inherited).second)
           return TypeWalker::Action::SkipChildren;
 
+        // If 'nominal' is an actor, we do not synthesize its conformance
+        // to the Actor protocol through a dummy extension.
+        // There is a special restriction on the Actor protocol in that
+        // it is only valid to conform to Actor on an 'actor' decl,
+        // not extensions of that 'actor'.
+        if (actorClass &&
+            inherited->isSpecificProtocol(KnownProtocolKind::Actor))
+          return TypeWalker::Action::SkipChildren;
+
+        if (inherited->isSPI() && !printOptions.PrintSPIs)
+          return TypeWalker::Action::Continue;
+
         if (isPublicOrUsableFromInline(inherited) &&
             conformanceDeclaredInModule(M, nominal, inherited)) {
           protocolsToPrint.push_back({inherited, protoAndAvailability.second});
@@ -379,20 +576,34 @@ public:
 
     for (const auto &protoAndAvailability : protocolsToPrint) {
       StreamPrinter printer(out);
+      ProtocolDecl *proto = protoAndAvailability.first;
+
+      bool haveFeatureChecks = printOptions.PrintCompatibilityFeatureChecks &&
+        printCompatibilityFeatureChecksPre(printer, proto);
+
       // FIXME: Shouldn't this be an implicit conversion?
       TinyPtrVector<const DeclAttribute *> attrs;
       attrs.insert(attrs.end(), protoAndAvailability.second.begin(),
                    protoAndAvailability.second.end());
+      auto spiAttributes = proto->getAttrs().getAttributes<SPIAccessControlAttr>();
+      attrs.insert(attrs.end(), spiAttributes.begin(), spiAttributes.end());
       DeclAttributes::print(printer, printOptions, attrs);
 
       printer << "extension ";
-      nominal->getDeclaredType().print(printer, printOptions);
+      PrintOptions typePrintOptions = printOptions;
+      typePrintOptions.FullyQualifiedTypes = false;
+      typePrintOptions.FullyQualifiedTypesIfAmbiguous = false;
+      nominal->getDeclaredType().print(printer, typePrintOptions);
       printer << " : ";
 
-      ProtocolDecl *proto = protoAndAvailability.first;
-      proto->getDeclaredType()->print(printer, printOptions);
+      proto->getDeclaredInterfaceType()->print(printer, printOptions);
 
-      printer << " {}\n";
+      printer << " {}";
+
+      if (haveFeatureChecks)
+        printCompatibilityFeatureChecksPost(printer);
+      else
+        printer << "\n";
     }
   }
 
@@ -406,13 +617,17 @@ public:
       return false;
     assert(nominal->isGenericContext());
 
+    if (printOptions.PrintSPIs)
+      out << "@_spi(" << DummyProtocolName << ")\n";
     out << "@available(*, unavailable)\nextension ";
     nominal->getDeclaredType().print(out, printOptions);
     out << " : ";
-    swift::interleave(ConditionalConformanceProtocols,
-                      [&out, &printOptions](const ProtocolType *protoTy) {
-                        protoTy->print(out, printOptions);
-                      }, [&out] { out << ", "; });
+    llvm::interleave(
+        ConditionalConformanceProtocols,
+        [&out, &printOptions](const ProtocolType *protoTy) {
+          protoTy->print(out, printOptions);
+        },
+        [&out] { out << ", "; });
     out << " where "
         << nominal->getGenericSignature()->getGenericParams().front()->getName()
         << " : " << DummyProtocolName << " {}\n";
@@ -431,16 +646,18 @@ const StringLiteral InheritedProtocolCollector::DummyProtocolName =
     "_ConstraintThatIsNotPartOfTheAPIOfThisLibrary";
 } // end anonymous namespace
 
+// MARK: Interface emission
+
 bool swift::emitSwiftInterface(raw_ostream &out,
                                ModuleInterfaceOptions const &Opts,
                                ModuleDecl *M) {
   assert(M);
 
   printToolVersionAndFlagsComment(out, Opts, M);
-  printImports(out, M);
+  printImports(out, Opts, M);
 
   const PrintOptions printOptions = PrintOptions::printSwiftInterfaceFile(
-      Opts.PreserveTypesAsWritten);
+      M, Opts.PreserveTypesAsWritten, Opts.PrintFullConvention, Opts.PrintSPIs);
   InheritedProtocolCollector::PerTypeMap inheritedProtocolMap;
 
   SmallVector<Decl *, 16> topLevelDecls;
@@ -450,13 +667,16 @@ bool swift::emitSwiftInterface(raw_ostream &out,
 
     if (!D->shouldPrintInContext(printOptions) ||
         !printOptions.shouldPrint(D)) {
+
       InheritedProtocolCollector::collectSkippedConditionalConformances(
-          inheritedProtocolMap, D);
+          inheritedProtocolMap, D, printOptions);
       continue;
     }
 
     D->print(out, printOptions);
     out << "\n";
+
+    diagnoseIfDeclShadowsKnownModule(Opts, const_cast<Decl *>(D), M);
   }
 
   // Print dummy extensions for any protocols that were indirectly conformed to.
@@ -472,6 +692,9 @@ bool swift::emitSwiftInterface(raw_ostream &out,
   }
   if (needDummyProtocolDeclaration)
     InheritedProtocolCollector::printDummyProtocolDeclaration(out);
+
+  if (Opts.DebugPrintInvalidSyntax)
+    out << "#__debug_emit_invalid_swiftinterface_syntax__\n";
 
   return false;
 }

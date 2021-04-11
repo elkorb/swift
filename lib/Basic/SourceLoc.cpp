@@ -105,7 +105,7 @@ bool SourceManager::openVirtualFile(SourceLoc loc, StringRef name,
   }
 
   CharSourceRange range = CharSourceRange(*this, loc, end);
-  VirtualFiles[end.Value.getPointer()] = { range, name, lineOffset };
+  VirtualFiles[end.Value.getPointer()] = {range, name.str(), lineOffset};
   CachedVFile = {nullptr, nullptr};
   return true;
 }
@@ -152,9 +152,8 @@ SourceManager::getVirtualFile(SourceLoc Loc) const {
   return nullptr;
 }
 
-
-Optional<unsigned> SourceManager::getIDForBufferIdentifier(
-    StringRef BufIdentifier) {
+Optional<unsigned>
+SourceManager::getIDForBufferIdentifier(StringRef BufIdentifier) const {
   auto It = BufIdentIDMap.find(BufIdentifier);
   if (It == BufIdentIDMap.end())
     return None;
@@ -255,7 +254,7 @@ void SourceLoc::printLineAndColumn(raw_ostream &OS, const SourceManager &SM,
     return;
   }
 
-  auto LineAndCol = SM.getLineAndColumn(*this, BufferID);
+  auto LineAndCol = SM.getPresumedLineAndColumnForLoc(*this, BufferID);
   OS << "line:" << LineAndCol.first << ':' << LineAndCol.second;
 }
 
@@ -274,7 +273,7 @@ void SourceLoc::print(raw_ostream &OS, const SourceManager &SM,
     OS << "line";
   }
 
-  auto LineAndCol = SM.getLineAndColumn(*this, BufferID);
+  auto LineAndCol = SM.getPresumedLineAndColumnForLoc(*this, BufferID);
   OS << ':' << LineAndCol.first << ':' << LineAndCol.second;
 }
 
@@ -331,42 +330,42 @@ SourceManager::resolveOffsetForEndOfLine(unsigned BufferId,
   return resolveFromLineCol(BufferId, Line, ~0u);
 }
 
+llvm::Optional<unsigned>
+SourceManager::getLineLength(unsigned BufferId, unsigned Line) const {
+  auto BegOffset = resolveFromLineCol(BufferId, Line, 0);
+  auto EndOffset = resolveFromLineCol(BufferId, Line, ~0u);
+  if (BegOffset && EndOffset) {
+     return EndOffset.getValue() - BegOffset.getValue();
+  }
+  return None;
+}
+
 llvm::Optional<unsigned> SourceManager::resolveFromLineCol(unsigned BufferId,
                                                            unsigned Line,
                                                            unsigned Col) const {
-  if (Line == 0 || Col == 0) {
+  if (Line == 0) {
     return None;
   }
-  const bool LineEnd = Col == ~0u;
+  const bool LineEnd = (Col == ~0u);
+  if (LineEnd)
+    Col = 0;
+
+  auto loc = const_cast<SourceManager *>(this)
+                 ->getLLVMSourceMgr()
+                 .FindLocForLineAndColumn(BufferId, Line, Col);
+  if (!loc.isValid())
+    return None;
+
   auto InputBuf = getLLVMSourceMgr().getMemoryBuffer(BufferId);
-  const char *Ptr = InputBuf->getBufferStart();
-  const char *End = InputBuf->getBufferEnd();
-  const char *LineStart = Ptr;
-  --Line;
-  for (; Line && (Ptr < End); ++Ptr) {
-    if (*Ptr == '\n') {
-      --Line;
-      LineStart = Ptr+1;
-    }
-  }
-  if (Line != 0) {
-    return None;
-  }
-  Ptr = LineStart;
-  // The <= here is to allow for non-inclusive range end positions at EOF
-  for (; ; ++Ptr) {
-    --Col;
-    if (Col == 0)
-      return Ptr - InputBuf->getBufferStart();
-    if (*Ptr == '\n' || Ptr == End) {
-      if (LineEnd) {
-        return Ptr - InputBuf->getBufferStart();
-      } else {
+  const char *Ptr = loc.getPointer();
+  if (LineEnd) {
+    const char *End = InputBuf->getBufferEnd();
+    for (;; ++Ptr) {
+      if (Ptr == End || *Ptr == '\n')
         break;
-      }
     }
   }
-  return None;
+  return Ptr - InputBuf->getBufferStart();
 }
 
 unsigned SourceManager::getExternalSourceBufferId(StringRef Path) {

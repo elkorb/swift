@@ -33,6 +33,7 @@ class ClangTypeConverter :
   using super = TypeVisitor<ClangTypeConverter, clang::QualType>;
 
   llvm::DenseMap<Type, clang::QualType> Cache;
+  llvm::DenseMap<const clang::Decl *, swift::Decl *> ReversedExportMap;
 
   bool StdlibTypesAreCached = false;
 
@@ -73,10 +74,38 @@ public:
     ArrayRef<AnyFunctionType::Param> params, Type resultTy,
     AnyFunctionType::Representation repr);
 
+  /// Compute the C function type for a SIL function type.
+  const clang::Type *getFunctionType(
+    ArrayRef<SILParameterInfo> params, Optional<SILResultInfo> result,
+    SILFunctionType::Representation repr);
+
+  /// Check whether the given Clang declaration is an export of a Swift
+  /// declaration introduced by this converter, and if so, return the original
+  /// Swift declaration.
+  Decl *getSwiftDeclForExportedClangDecl(const clang::Decl *decl) const;
+
+  /// Translate Swift generic arguments to Clang C++ template arguments.
+  ///
+  /// \p templateArgs must be empty. \p templateParams and \p genericArgs must
+  /// be equal in size.
+  ///
+  /// \returns nullptr if successful. If an error occors, returns a list of
+  /// types that couldn't be converted.
+  std::unique_ptr<TemplateInstantiationError> getClangTemplateArguments(
+      const clang::TemplateParameterList *templateParams,
+      ArrayRef<Type> genericArgs,
+      SmallVectorImpl<clang::TemplateArgument> &templateArgs);
+
 private:
+  friend ASTContext; // HACK: expose `convert` method to ASTContext
+
   clang::QualType convert(Type type);
+
   clang::QualType convertMemberType(NominalTypeDecl *DC,
                                     StringRef memberName);
+
+  void registerExportedClangDecl(Decl *swiftDecl,
+                                 const clang::Decl *clangDecl);
 
   clang::QualType reverseBuiltinTypeMapping(StructType *type);
 

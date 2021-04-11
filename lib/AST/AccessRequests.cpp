@@ -36,7 +36,7 @@ namespace swift {
 //----------------------------------------------------------------------------//
 // AccessLevel computation
 //----------------------------------------------------------------------------//
-llvm::Expected<AccessLevel>
+AccessLevel
 AccessLevelRequest::evaluate(Evaluator &evaluator, ValueDecl *D) const {
   assert(!D->hasAccess());
 
@@ -68,7 +68,7 @@ AccessLevelRequest::evaluate(Evaluator &evaluator, ValueDecl *D) const {
 
   // Special case for generic parameters; we just give them a dummy
   // access level.
-  if (auto genericParam = dyn_cast<GenericTypeParamDecl>(D)) {
+  if (isa<GenericTypeParamDecl>(D)) {
     return AccessLevel::Internal;
   }
 
@@ -168,7 +168,7 @@ static bool isStoredWithPrivateSetter(VarDecl *VD) {
   return true;
 }
 
-llvm::Expected<AccessLevel>
+AccessLevel
 SetterAccessLevelRequest::evaluate(Evaluator &evaluator,
                                    AbstractStorageDecl *ASD) const {
   assert(!ASD->Accessors.getInt().hasValue());
@@ -205,7 +205,7 @@ void SetterAccessLevelRequest::cacheResult(AccessLevel value) const {
 // DefaultAccessLevel computation
 //----------------------------------------------------------------------------//
 
-llvm::Expected<std::pair<AccessLevel, AccessLevel>>
+std::pair<AccessLevel, AccessLevel>
 DefaultAndMaxAccessLevelRequest::evaluate(Evaluator &evaluator,
                                           ExtensionDecl *ED) const {
   auto &Ctx = ED->getASTContext();
@@ -213,7 +213,7 @@ DefaultAndMaxAccessLevelRequest::evaluate(Evaluator &evaluator,
 
   AccessLevel maxAccess = AccessLevel::Public;
 
-  if (GenericParamList *genericParams = ED->getGenericParams()) {
+  if (ED->getGenericParams()) {
     // Only check the trailing 'where' requirements. Other requirements come
     // from the extended type and have already been checked.
     DirectlyReferencedTypeDecls typeDecls =
@@ -221,11 +221,19 @@ DefaultAndMaxAccessLevelRequest::evaluate(Evaluator &evaluator,
 
     Optional<AccessScope> maxScope = AccessScope::getPublic();
 
+    // Try to scope the extension's access to the least public type mentioned
+    // in its where clause.
     for (auto *typeDecl : typeDecls) {
       if (isa<TypeAliasDecl>(typeDecl) || isa<NominalTypeDecl>(typeDecl)) {
         auto scope = typeDecl->getFormalAccessScope(ED->getDeclContext());
         maxScope = maxScope->intersectWith(scope);
       }
+    }
+
+    // Now include the scope of the extended nominal type.
+    if (NominalTypeDecl *nominal = ED->getExtendedNominal()) {
+      auto scope = nominal->getFormalAccessScope(ED->getDeclContext());
+      maxScope = maxScope->intersectWith(scope);
     }
 
     if (!maxScope.hasValue()) {
@@ -242,12 +250,6 @@ DefaultAndMaxAccessLevelRequest::evaluate(Evaluator &evaluator,
       // occurs, though.
       maxAccess = AccessLevel::FilePrivate;
     }
-  }
-
-  if (NominalTypeDecl *nominal = ED->getExtendedNominal()) {
-    maxAccess = std::min(maxAccess,
-                         std::max(nominal->getFormalAccess(),
-                                  AccessLevel::FilePrivate));
   }
 
   AccessLevel defaultAccess;

@@ -19,7 +19,7 @@
 using namespace swift;
 
 // For manual debugging, dump graphs in DOT format.
-llvm::cl::opt<bool> EnableGraphWriter(
+static llvm::cl::opt<bool> EnableGraphWriter(
     "escapes-enable-graphwriter", llvm::cl::init(false),
     llvm::cl::desc("With -escapes-dump, also write .dot files."));
 
@@ -81,6 +81,14 @@ class EscapeAnalysisDumper : public SILModuleTransform {
               for (unsigned i = 0, e = Values.size(); i != e; ++i) {
                 SILValue val = Values[i];
                 bool escape = EA->canEscapeTo(val, rci);
+                llvm::outs() << (escape ? "May" : "No") << "Escape: " << val
+                             << " to " << ii;
+              }
+            }
+            if (DestroyValueInst *dvi = dyn_cast<DestroyValueInst>(&ii)) {
+              for (unsigned i = 0, e = Values.size(); i != e; ++i) {
+                SILValue val = Values[i];
+                bool escape = EA->canEscapeTo(val, dvi);
                 llvm::outs() << (escape ? "May" : "No") << "Escape: " << val
                              << " to " << ii;
               }

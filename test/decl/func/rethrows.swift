@@ -9,7 +9,7 @@ let r3 : Optional<() rethrows -> ()> = nil // expected-error {{only function dec
 
 func f1(_ f: () throws -> ()) rethrows { try f() }
 func f2(_ f: () -> ()) rethrows { f() } // expected-error {{'rethrows' function must take a throwing function argument}}
-func f3(_ f: UndeclaredFunctionType) rethrows { f() } // expected-error {{use of undeclared type 'UndeclaredFunctionType'}}
+func f3(_ f: UndeclaredFunctionType) rethrows { f() } // expected-error {{cannot find type 'UndeclaredFunctionType' in scope}}
 
 /** Protocol conformance checking ********************************************/
 
@@ -611,4 +611,38 @@ func rdar_47550715() {
 
   func foo(_: A<F>? = nil) {} // Ok
   func bar(_: A<F>? = .none) {} // Ok
+}
+
+// SR-14270 - test case for diagnostic note 'because_rethrows_default_argument_throws'
+func nonThrowableDefaultRethrows(_ f: () throws -> () = {}) rethrows {
+  try f()
+}
+// NOTE: This should compile and not emit a diagnostic because ideally the compiler could statically
+// know the default argument value could never throw. See SR-1524.
+nonThrowableDefaultRethrows() // expected-error {{call can throw but is not marked with 'try'}}
+                              // expected-note@-1 {{call is to 'rethrows' function, but a defaulted argument function can throw}}
+
+func throwableDefaultRethrows(_ f: () throws -> () = { throw SomeError.Badness }) rethrows {
+  try f()
+}
+// This should always emit a diagnostic because we can statically know that default argument can throw. 
+throwableDefaultRethrows()  // expected-error {{call can throw but is not marked with 'try'}}
+                            // expected-note@-1 {{call is to 'rethrows' function, but a defaulted argument function can throw}}
+
+// rdar://76169080 - rethrows -vs- Optional default arguments
+func optionalRethrowsDefaultArg1(_: (() throws -> ())? = nil) rethrows {}
+
+func callsOptionalRethrowsDefaultArg1() throws {
+  optionalRethrowsDefaultArg1()
+  optionalRethrowsDefaultArg1(nil)
+  try optionalRethrowsDefaultArg1 { throw SomeError.Badness }
+}
+
+func optionalRethrowsDefaultArg2(_: (() throws -> ())? = { throw SomeError.Badness }) rethrows {}
+
+func callsOptionalRethrowsDefaultArg2() throws {
+  optionalRethrowsDefaultArg2()  // expected-error {{call can throw but is not marked with 'try'}}
+                                 // expected-note@-1 {{call is to 'rethrows' function, but a defaulted argument function can throw}}
+  optionalRethrowsDefaultArg2(nil)
+  try optionalRethrowsDefaultArg2 { throw SomeError.Badness }
 }

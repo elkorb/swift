@@ -23,6 +23,7 @@
 #define SWIFT_SILOPTIMIZER_UTILS_BASICBLOCKOPTUTILS_H
 
 #include "swift/SIL/SILBasicBlock.h"
+#include "swift/SIL/BasicBlockBits.h"
 #include "swift/SIL/SILCloner.h"
 #include "swift/SIL/SILInstruction.h"
 #include "swift/SILOptimizer/Utils/InstOptUtils.h"
@@ -32,6 +33,26 @@ namespace swift {
 class BasicBlockCloner;
 class SILLoop;
 class SILLoopInfo;
+
+/// Compute the set of reachable blocks.
+class ReachableBlocks {
+  BasicBlockSet visited;
+
+public:
+  ReachableBlocks(SILFunction *function) : visited(function) {}
+
+  /// Invoke \p visitor for each reachable block in \p f in worklist order (at
+  /// least one predecessor has been visited--defs are always visited before
+  /// uses except for phi-type block args). The \p visitor takes a block
+  /// argument, which is already marked visited, and must return true to
+  /// continue visiting blocks.
+  ///
+  /// Returns true if all reachable blocks were visited.
+  bool visit(function_ref<bool(SILBasicBlock *)> visitor);
+
+  /// Return true if \p bb has been visited.
+  bool isVisited(SILBasicBlock *bb) const { return visited.contains(bb); }
+};
 
 /// Remove all instructions in the body of \p bb in safe manner by using
 /// undef.
@@ -61,6 +82,19 @@ inline bool isUsedOutsideOfBlock(SILValue v) {
 bool rotateLoop(SILLoop *loop, DominanceInfo *domInfo, SILLoopInfo *loopInfo,
                 bool rotateSingleBlockLoops, SILBasicBlock *upToBB,
                 bool shouldVerify);
+
+//===----------------------------------------------------------------------===//
+//                             BasicBlock Cloning
+//===----------------------------------------------------------------------===//
+
+/// Return true if the \p termInst can be cloned. If termInst produces a
+/// guaranteed result, then it must be possible to create a nested borrow scope
+/// for that result when the cloner generates a guaranteed phi.
+///
+/// Note: if all the terminators uses will also be cloned, then a guaranteed phi
+/// won't be necessary. This is one of the reasons that cloning a region is much
+/// better than cloning a single block at a time.
+bool canCloneTerminator(TermInst *termInst);
 
 /// Sink address projections to their out-of-block uses. This is
 /// required after cloning a block and before calling
@@ -118,9 +152,9 @@ public:
 /// block's branch to jump to the newly cloned block, call cloneBranchTarget
 /// instead.
 ///
-/// After cloning, call splitCriticalEdges, then updateSSAAfterCloning. This is
-/// decoupled from cloning becaused some clients perform CFG edges updates after
-/// cloning but before splitting CFG edges.
+/// After cloning, call updateSSAAfterCloning. This is decoupled from cloning
+/// becaused some clients perform CFG edges updates after cloning but before
+/// splitting CFG edges.
 class BasicBlockCloner : public SILCloner<BasicBlockCloner> {
   using SuperTy = SILCloner<BasicBlockCloner>;
   friend class SILCloner<BasicBlockCloner>;
@@ -152,6 +186,7 @@ public:
       if (!canCloneInstruction(&inst))
         return false;
     }
+    canCloneTerminator(origBB->getTerminator());
     return true;
   }
 
@@ -200,6 +235,19 @@ public:
     bi->eraseFromParent();
   }
 
+  /// Create phis and maintain OSSA invariants.
+  ///
+  /// Note: This must be called after calling cloneBlock or cloneBranchTarget,
+  /// before using any OSSA utilities.
+  ///
+  /// The client may perform arbitrary branch fixups and dead block removal
+  /// after cloning and before calling this.
+  ///
+  /// WARNING: If client converts terminator results to phis (e.g. replaces a
+  /// switch_enum with a branch), then it must call this before performing that
+  /// transformation, or fix the OSSA representation of that value itself.
+  void updateOSSAAfterCloning();
+
   /// Get the newly cloned block corresponding to `origBB`.
   SILBasicBlock *getNewBB() {
     return remapBasicBlock(origBB);
@@ -207,15 +255,14 @@ public:
 
   bool wasCloned() { return isBlockCloned(origBB); }
 
-  /// Call this after processing all instructions to fix the control flow
-  /// graph. The branch cloner may have left critical edges.
-  bool splitCriticalEdges(DominanceInfo *domInfo, SILLoopInfo *loopInfo);
-
-  /// Helper function to perform SSA updates after calling both
-  /// cloneBranchTarget and splitCriticalEdges.
-  void updateSSAAfterCloning();
-
 protected:
+  /// Helper function to perform SSA updates used by updateOSSAAfterCloning.
+  void updateSSAAfterCloning(SmallVectorImpl<SILPhiArgument *> &newPhis);
+
+  /// Given a terminator result, either from the original or the cloned block,
+  /// update OSSA for any phis created for the result during edge splitting.
+  void updateOSSATerminatorResult(SILPhiArgument *termResult);
+
   // MARK: CRTP overrides.
 
   /// Override getMappedValue to allow values defined outside the block to be
@@ -289,14 +336,24 @@ class StaticInitCloner : public SILCloner<StaticInitCloner> {
   /// don't have any operands).
   llvm::SmallVector<SILInstruction *, 8> readyToClone;
 
+  SILInstruction *insertionPoint = nullptr;
+
 public:
   StaticInitCloner(SILGlobalVariable *gVar)
       : SILCloner<StaticInitCloner>(gVar) {}
 
+  StaticInitCloner(SILInstruction *insertionPoint)
+      : SILCloner<StaticInitCloner>(*insertionPoint->getFunction()),
+        insertionPoint(insertionPoint) {
+    Builder.setInsertionPoint(insertionPoint);
+  }
+
   /// Add \p InitVal and all its operands (transitively) for cloning.
   ///
   /// Note: all init values must are added, before calling clone().
-  void add(SILInstruction *initVal);
+  /// Returns false if cloning is not possible, e.g. if we would end up cloning
+  /// a reference to a private function into a function which is serialized.
+  bool add(SILInstruction *initVal);
 
   /// Clone \p InitVal and all its operands into the initializer of the
   /// SILGlobalVariable.
@@ -308,13 +365,23 @@ public:
   static void appendToInitializer(SILGlobalVariable *gVar,
                                   SingleValueInstruction *initVal) {
     StaticInitCloner cloner(gVar);
-    cloner.add(initVal);
+    bool success = cloner.add(initVal);
+    (void)success;
+    assert(success && "adding initVal cannot fail for a global variable");
     cloner.clone(initVal);
   }
 
 protected:
   SILLocation remapLocation(SILLocation loc) {
+    if (insertionPoint)
+      return insertionPoint->getLoc();
     return ArtificialUnreachableLocation();
+  }
+
+  const SILDebugScope *remapScope(const SILDebugScope *DS) {
+    if (insertionPoint)
+      return insertionPoint->getDebugScope();
+    return nullptr;
   }
 };
 

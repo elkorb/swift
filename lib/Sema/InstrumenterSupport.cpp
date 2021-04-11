@@ -82,7 +82,8 @@ InstrumenterBase::InstrumenterBase(ASTContext &C, DeclContext *DC)
   const std::string filePrefix = "_pg_file_";
 
   // Setup Module identifier
-  std::string moduleName = TypeCheckDC->getParentModule()->getName().str();
+  std::string moduleName =
+      std::string(TypeCheckDC->getParentModule()->getName());
   Identifier moduleIdentifier =
       Context.getIdentifier(builtinPrefix + modulePrefix + moduleName);
 
@@ -118,7 +119,7 @@ bool InstrumenterBase::doTypeCheckImpl(ASTContext &Ctx, DeclContext *DC,
   DiagnosticSuppression suppression(Ctx.Diags);
   ErrorGatherer errorGatherer(Ctx.Diags);
 
-  TypeChecker::typeCheckExpression(parsedExpr, DC);
+  TypeChecker::typeCheckExpression(parsedExpr, DC, /*contextualInfo=*/{});
 
   if (parsedExpr) {
     ErrorFinder errorFinder;

@@ -293,6 +293,31 @@ internal struct _Buffer72 {
   }
 }
 
+#if !((os(macOS) || targetEnvironment(macCatalyst)) && arch(x86_64))
+// Note that this takes a Float32 argument instead of Float16, because clang
+// doesn't have _Float16 on all platforms yet.
+@_silgen_name("swift_float16ToString")
+internal func _float16ToStringImpl(
+  _ buffer: UnsafeMutablePointer<UTF8.CodeUnit>,
+  _ bufferLength: UInt,
+  _ value: Float32,
+  _ debug: Bool
+) -> Int
+
+@available(macOS 11.0, iOS 14.0, watchOS 7.0, tvOS 14.0, *)
+internal func _float16ToString(
+  _ value: Float16,
+  debug: Bool
+) -> (buffer: _Buffer32, length: Int) {
+  _internalInvariant(MemoryLayout<_Buffer32>.size == 32)
+  var buffer = _Buffer32()
+  let length = buffer.withBytes { (bufferPtr) in
+    _float16ToStringImpl(bufferPtr, 32, Float(value), debug)
+  }
+  return (buffer, length)
+}
+#endif
+
 // Returns a UInt64, but that value is the length of the string, so it's
 // guaranteed to fit into an Int. This is part of the ABI, so we can't
 // trivially change it to Int. Callers can safely convert the result

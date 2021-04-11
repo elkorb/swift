@@ -72,14 +72,18 @@ class ARCEntryPointBuilder {
   llvm::CallingConv::ID DefaultCC;
 
   llvm::CallInst *CreateCall(Constant *Fn, Value *V) {
-    CallInst *CI = B.CreateCall(Fn, V);
+    CallInst *CI = B.CreateCall(
+        cast<llvm::FunctionType>(Fn->getType()->getPointerElementType()), Fn,
+        V);
     if (auto Fun = llvm::dyn_cast<llvm::Function>(Fn))
       CI->setCallingConv(Fun->getCallingConv());
     return CI;
   }
 
   llvm::CallInst *CreateCall(Constant *Fn, llvm::ArrayRef<Value *> Args) {
-    CallInst *CI = B.CreateCall(Fn, Args);
+    CallInst *CI = B.CreateCall(
+        cast<llvm::FunctionType>(Fn->getType()->getPointerElementType()), Fn,
+        Args);
     if (auto Fun = llvm::dyn_cast<llvm::Function>(Fn))
       CI->setCallingConv(Fun->getCallingConv());
     return CI;
@@ -189,8 +193,7 @@ public:
     // intrinsics are atomic today.
     if (I->getIntrinsicID() != llvm::Intrinsic::not_intrinsic)
       return false;
-    return (I->getCalledFunction()->getName().find("nonatomic") !=
-            llvm::StringRef::npos);
+    return (I->getCalledFunction()->getName().contains("nonatomic"));
   }
 
   bool isAtomic(CallInst *I) {
@@ -374,7 +377,7 @@ private:
 
   Type *getNamedOpaquePtrTy(StringRef name) {
     auto &M = getModule();
-    if (auto *ty = M.getTypeByName(name)) {
+    if (auto *ty = llvm::StructType::getTypeByName(M.getContext(), name)) {
       return ty->getPointerTo();
     }
 

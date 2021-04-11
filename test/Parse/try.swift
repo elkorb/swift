@@ -182,7 +182,8 @@ let _: Int = try? foo() // expected-error {{value of optional type 'Int?' not un
 class X {}
 func test(_: X) {}
 func producesObject() throws -> AnyObject { return X() }
-test(try producesObject()) // expected-error {{'AnyObject' is not convertible to 'X'; did you mean to use 'as!' to force downcast?}} {{26-26= as! X}}
+test(try producesObject()) // expected-error {{'AnyObject' is not convertible to 'X'}} 
+// expected-note@-1{{did you mean to use 'as!' to force downcast?}} {{26-26= as! X}}
 
 _ = "a\(try maybeThrow())b"
 _ = try "a\(maybeThrow())b"
@@ -236,14 +237,12 @@ struct ThingProducer {
 }
 
 let optProducer: ThingProducer? = ThingProducer()
-// In Swift 4 mode try? always adds a new level of optionality so suggesting `try!` doesn't really help in these examples.
-let _: Int? = try? optProducer?.produceInt() // expected-error {{cannot convert value of type 'Int??' to specified type 'Int?'}}
+let _: Int? = try? optProducer?.produceInt() // expected-error {{value of optional type 'Int??' not unwrapped; did you mean to use 'try!' or chain with '?'?}}
 let _: Int = try? optProducer?.produceInt() // expected-error {{cannot convert value of type 'Int??' to specified type 'Int'}}
 let _: String = try? optProducer?.produceInt() // expected-error {{cannot convert value of type 'Int??' to specified type 'String'}}
 let _: Int?? = try? optProducer?.produceInt() // good
 
-let _: Int? = try? optProducer?.produceIntNoThrowing() // expected-error {{cannot convert value of type 'Int??' to specified type 'Int?'}}
-// expected-warning@-1 {{no calls to throwing functions occur within 'try' expression}}
+let _: Int? = try? optProducer?.produceIntNoThrowing() // expected-error {{value of optional type 'Int??' not unwrapped; did you mean to use 'try!' or chain with '?'?}}
 let _: Int?? = try? optProducer?.produceIntNoThrowing() // expected-warning {{no calls to throwing functions occur within 'try' expression}}
 
 let _: Int? = (try? optProducer?.produceAny()) as? Int // good

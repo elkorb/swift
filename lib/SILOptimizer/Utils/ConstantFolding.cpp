@@ -23,6 +23,7 @@
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APSInt.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/IR/Intrinsics.h"
 #include "llvm/Support/Debug.h"
 
 #define DEBUG_TYPE "sil-constant-folding"
@@ -288,9 +289,9 @@ constantFoldBinaryWithOverflow(BuiltinInst *BI, BuiltinValueKind ID,
 static SILValue
 constantFoldCountLeadingOrTrialingZeroIntrinsic(BuiltinInst *bi,
                                                 bool countLeadingZeros) {
-  assert(bi->getIntrinsicID() == llvm::Intrinsic::ctlz ||
-         bi->getIntrinsicID() == llvm::Intrinsic::cttz &&
-             "Invalid Intrinsic - expected Ctlz/Cllz");
+  assert((bi->getIntrinsicID() == (llvm::Intrinsic::ID)llvm::Intrinsic::ctlz ||
+          bi->getIntrinsicID() == (llvm::Intrinsic::ID)llvm::Intrinsic::cttz) &&
+         "Invalid Intrinsic - expected Ctlz/Cllz");
   OperandValueArrayRef args = bi->getArguments();
 
   // Fold for integer constant arguments.
@@ -994,15 +995,20 @@ public:
 
 IEEESemantics getFPSemantics(BuiltinFloatType *fpType) {
   switch (fpType->getFPKind()) {
+  case BuiltinFloatType::IEEE16:
+    return IEEESemantics(16, 5, 10, false);
   case BuiltinFloatType::IEEE32:
     return IEEESemantics(32, 8, 23, false);
   case BuiltinFloatType::IEEE64:
     return IEEESemantics(64, 11, 52, false);
   case BuiltinFloatType::IEEE80:
     return IEEESemantics(80, 15, 63, true);
-  default:
-    llvm_unreachable("Unexpected semantics");
+  case BuiltinFloatType::IEEE128:
+    return IEEESemantics(128, 15, 112, false);
+  case BuiltinFloatType::PPC128:
+    llvm_unreachable("ppc128 is not supported");
   }
+  llvm_unreachable("invalid floating point kind");
 }
 
 /// This function, given the exponent and significand of a binary fraction
@@ -1389,7 +1395,7 @@ static bool constantFoldInstruction(Operand *Op, Optional<bool> &ResultsInError,
   // Constant fold extraction of a constant element.
   if (auto *TEI = dyn_cast<TupleExtractInst>(User)) {
     if (auto *TheTuple = dyn_cast<TupleInst>(TEI->getOperand())) {
-      Results.push_back(TheTuple->getElement(TEI->getFieldNo()));
+      Results.push_back(TheTuple->getElement(TEI->getFieldIndex()));
       return true;
     }
   }
@@ -1418,7 +1424,7 @@ static bool constantFoldInstruction(Operand *Op, Optional<bool> &ResultsInError,
 
             // First check if we are not compatible with guaranteed. This means
             // we would be Owned or Unowned. If so, return SILValue().
-            if (!ownershipKind.isCompatibleWith(ValueOwnershipKind::Guaranteed))
+            if (!ownershipKind.isCompatibleWith(OwnershipKind::Guaranteed))
               return SILValue();
 
             // Otherwise check if our operand is non-trivial and None. In cases
@@ -1426,7 +1432,7 @@ static bool constantFoldInstruction(Operand *Op, Optional<bool> &ResultsInError,
             // where we lost that our underlying value is None due to
             // intermediate aggregate literal operations. In that case, we /do
             // not/ want to eliminate the destructure.
-            if (ownershipKind == ValueOwnershipKind::None &&
+            if (ownershipKind == OwnershipKind::None &&
                 !operandValue->getType().isTrivial(*Struct->getFunction()))
               return SILValue();
 
@@ -1452,7 +1458,7 @@ static bool constantFoldInstruction(Operand *Op, Optional<bool> &ResultsInError,
 
             // First check if we are not compatible with guaranteed. This means
             // we would be Owned or Unowned. If so, return SILValue().
-            if (!ownershipKind.isCompatibleWith(ValueOwnershipKind::Guaranteed))
+            if (!ownershipKind.isCompatibleWith(OwnershipKind::Guaranteed))
               return SILValue();
 
             // Otherwise check if our operand is non-trivial and None. In cases
@@ -1460,7 +1466,7 @@ static bool constantFoldInstruction(Operand *Op, Optional<bool> &ResultsInError,
             // where we lost that our underlying value is None due to
             // intermediate aggregate literal operations. In that case, we /do
             // not/ want to eliminate the destructure.
-            if (ownershipKind == ValueOwnershipKind::None &&
+            if (ownershipKind == OwnershipKind::None &&
                 !operandValue->getType().isTrivial(*Tuple->getFunction()))
               return SILValue();
 
@@ -1490,6 +1496,38 @@ static bool isApplyOfBuiltin(SILInstruction &I, BuiltinValueKind kind) {
   return false;
 }
 
+static bool isApplyOfKnownAvailability(SILInstruction &I) {
+  auto apply = FullApplySite::isa(&I);
+  if (!apply)
+    return false;
+  auto callee = apply.getReferencedFunctionOrNull();
+  if (!callee)
+    return false;
+  if (!callee->hasSemanticsAttr("availability.osversion"))
+    return false;
+  auto &context = I.getFunction()->getASTContext();
+  auto deploymentAvailability =
+      AvailabilityContext::forDeploymentTarget(context);
+  if (apply.getNumArguments() != 3)
+    return false;
+  auto arg0 = dyn_cast<IntegerLiteralInst>(apply.getArgument(0));
+  if (!arg0)
+    return false;
+  auto arg1 = dyn_cast<IntegerLiteralInst>(apply.getArgument(1));
+  if (!arg1)
+    return false;
+  auto arg2 = dyn_cast<IntegerLiteralInst>(apply.getArgument(2));
+  if (!arg2)
+    return false;
+
+  auto version = VersionRange::allGTE(llvm::VersionTuple(
+      arg0->getValue().getLimitedValue(), arg1->getValue().getLimitedValue(),
+      arg2->getValue().getLimitedValue()));
+
+  auto callAvailability = AvailabilityContext(version);
+  return deploymentAvailability.isContainedIn(callAvailability);
+}
+
 static bool isApplyOfStringConcat(SILInstruction &I) {
   if (auto *AI = dyn_cast<ApplyInst>(&I))
     if (auto *Fn = AI->getReferencedFunctionOrNull())
@@ -1501,46 +1539,6 @@ static bool isApplyOfStringConcat(SILInstruction &I) {
 static bool isFoldable(SILInstruction *I) {
   return isa<IntegerLiteralInst>(I) || isa<FloatLiteralInst>(I) ||
          isa<StringLiteralInst>(I);
-}
-
-bool ConstantFolder::constantFoldStringConcatenation(ApplyInst *AI) {
-  SILBuilder B(AI);
-  // Try to apply the string literal concatenation optimization.
-  auto *Concatenated = tryToConcatenateStrings(AI, B);
-  // Bail if string literal concatenation could not be performed.
-  if (!Concatenated)
-    return false;
-
-  // Replace all uses of the old instruction by a new instruction.
-  AI->replaceAllUsesWith(Concatenated);
-
-  auto RemoveCallback = [&](SILInstruction *DeadI) { WorkList.remove(DeadI); };
-  // Remove operands that are not used anymore.
-  // Even if they are apply_inst, it is safe to
-  // do so, because they can only be applies
-  // of functions annotated as string.utf16
-  // or string.utf16.
-  for (auto &Op : AI->getAllOperands()) {
-    SILValue Val = Op.get();
-    Op.drop();
-    if (Val->use_empty()) {
-      auto *DeadI = Val->getDefiningInstruction();
-      assert(DeadI);
-      recursivelyDeleteTriviallyDeadInstructions(DeadI, /*force*/ true,
-                                                 RemoveCallback);
-    }
-  }
-  // Schedule users of the new instruction for constant folding.
-  // We only need to schedule the string.concat invocations.
-  for (auto AIUse : Concatenated->getUses()) {
-    if (isApplyOfStringConcat(*AIUse->getUser())) {
-      WorkList.insert(AIUse->getUser());
-    }
-  }
-  // Delete the old apply instruction.
-  recursivelyDeleteTriviallyDeadInstructions(AI, /*force*/ true,
-                                             RemoveCallback);
-  return true;
 }
 
 /// Given a buitin instruction calling globalStringTablePointer, check whether
@@ -1556,7 +1554,7 @@ constantFoldGlobalStringTablePointerBuiltin(BuiltinInst *bi,
   //
   // We can look through ownership instructions to get to the string value that
   // is passed to this builtin.
-  SILValue builtinOperand = stripOwnershipInsts(bi->getOperand(0));
+  SILValue builtinOperand = lookThroughOwnershipInsts(bi->getOperand(0));
   SILFunction *caller = bi->getFunction();
 
   FullApplySite stringInitSite = FullApplySite::isa(builtinOperand);
@@ -1620,6 +1618,11 @@ void ConstantFolder::initializeWorklist(SILFunction &f) {
 
       if (isApplyOfBuiltin(*inst, BuiltinValueKind::GlobalStringTablePointer) ||
           isApplyOfBuiltin(*inst, BuiltinValueKind::IsConcrete)) {
+        WorkList.insert(inst);
+        continue;
+      }
+
+      if (isApplyOfKnownAvailability(*inst)) {
         WorkList.insert(inst);
         continue;
       }
@@ -1765,14 +1768,17 @@ ConstantFolder::processWorkList() {
           continue;
         }
       }
-
-    if (auto *AI = dyn_cast<ApplyInst>(I)) {
-      // Apply may only come from a string.concat invocation.
-      if (constantFoldStringConcatenation(AI)) {
-        // Invalidate all analysis that's related to the call graph.
+    // Replace a known availability.version semantic call.
+    if (isApplyOfKnownAvailability(*I)) {
+      if (auto apply = dyn_cast<ApplyInst>(I)) {
+        SILBuilderWithScope B(I);
+        auto tru = B.createIntegerLiteral(apply->getLoc(), apply->getType(), 1);
+        apply->replaceAllUsesWith(tru);
+        eliminateDeadInstruction(
+            I, [&](SILInstruction *DeadI) { WorkList.remove(DeadI); });
+        WorkList.insert(tru);
         InvalidateInstructions = true;
       }
-
       continue;
     }
 

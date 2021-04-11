@@ -12,6 +12,7 @@
 
 #include "gtest/gtest.h"
 #include "swift/AST/ASTContext.h"
+#include "swift/Basic/Defer.h"
 #include "swift/Frontend/Frontend.h"
 #include "swift/Frontend/ModuleInterfaceLoader.h"
 #include "swift/Frontend/PrintingDiagnosticConsumer.h"
@@ -33,7 +34,7 @@ static bool emitFileWithContents(StringRef path, StringRef contents,
   if (llvm::sys::fs::openFileForWrite(path, fd))
     return true;
   if (pathOut)
-    *pathOut = path;
+    *pathOut = path.str();
   llvm::raw_fd_ostream file(fd, /*shouldClose=*/true);
   file << contents;
   return false;
@@ -98,11 +99,20 @@ protected:
     LangOptions langOpts;
     langOpts.Target = llvm::Triple(llvm::sys::getDefaultTargetTriple());
     SearchPathOptions searchPathOpts;
+    ClangImporterOptions clangImpOpts;
+    SILOptions silOpts;
     auto ctx =
-        ASTContext::get(langOpts, typeckOpts, searchPathOpts, sourceMgr, diags);
+        ASTContext::get(langOpts, typeckOpts, searchPathOpts, clangImpOpts,
+                        sourceMgr, diags);
+
+    ctx->addModuleInterfaceChecker(
+      std::make_unique<ModuleInterfaceCheckerImpl>(*ctx, cacheDir,
+        prebuiltCacheDir, ModuleInterfaceLoaderOptions(),
+        swift::RequireOSSAModules_t(silOpts)));
 
     auto loader = ModuleInterfaceLoader::create(
-        *ctx, cacheDir, prebuiltCacheDir,
+        *ctx, *static_cast<ModuleInterfaceCheckerImpl*>(
+          ctx->getModuleInterfaceChecker()),
         /*dependencyTracker*/nullptr,
         ModuleLoadingMode::PreferSerialized);
 
@@ -113,10 +123,10 @@ protected:
     std::unique_ptr<llvm::MemoryBuffer> moduleSourceInfoBuffer;
 
     auto error =
-      loader->findModuleFilesInDirectory({moduleName, SourceLoc()}, tempDir,
-        "Library.swiftmodule", "Library.swiftdoc", "Library.swiftsourceinfo",
+      loader->findModuleFilesInDirectory({moduleName, SourceLoc()},
+        SerializedModuleBaseName(tempDir, SerializedModuleBaseName("Library")),
         /*ModuleInterfacePath*/nullptr,
-        &moduleBuffer, &moduleDocBuffer, &moduleSourceInfoBuffer);
+        &moduleBuffer, &moduleDocBuffer, &moduleSourceInfoBuffer, /*IsFramework*/false);
     ASSERT_FALSE(error);
     ASSERT_FALSE(diags.hadAnyError());
 

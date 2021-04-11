@@ -1,4 +1,4 @@
-//===----- FineGrainedependencies.h -----------------------------*- C++ -*-===//
+//===----- FineGrainedDependencies.h ----------------------------*- C++ -*-===//
 //
 // This source file is part of the Swift.org open source project
 //
@@ -13,10 +13,15 @@
 #ifndef SWIFT_AST_FINE_GRAINED_DEPENDENCIES_H
 #define SWIFT_AST_FINE_GRAINED_DEPENDENCIES_H
 
+#include "swift/AST/EvaluatorDependencies.h"
 #include "swift/Basic/Debug.h"
+#include "swift/Basic/Fingerprint.h"
 #include "swift/Basic/LLVM.h"
+#include "swift/Basic/NullablePtr.h"
 #include "swift/Basic/Range.h"
+#include "swift/Basic/ReferenceDependencyKeys.h"
 #include "llvm/ADT/Hashing.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/Support/MD5.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/YAMLParser.h"
@@ -53,13 +58,19 @@
 //==============================================================================
 
 namespace swift {
+class Decl;
 class DependencyTracker;
 class DiagnosticEngine;
 class FrontendOptions;
+class ModuleDecl;
 class SourceFile;
+class NominalTypeDecl;
+class ValueDecl;
 
 /// Use a new namespace to help keep the experimental code from clashing.
 namespace fine_grained_dependencies {
+
+class SourceFileDepGraph;
 
 using StringVec = std::vector<std::string>;
 
@@ -92,14 +103,20 @@ template <typename KeyT, typename ValueT> class Memoizer {
 public:
   Memoizer() = default;
 
+  Optional<ValueT> findExisting(KeyT key) {
+    auto iter = memos.find(key);
+    if (iter != memos.end())
+      return iter->second;
+    return None;
+  }
+
   /// \p createFn must create a \ref ValueT that corresponds to the \ref KeyT
   /// passed into it.
   ValueT
   findExistingOrCreateIfNew(KeyT key,
                             function_ref<ValueT(const KeyT &)> createFn) {
-    auto iter = memos.find(key);
-    if (iter != memos.end())
-      return iter->second;
+    if (auto existing = findExisting(key))
+      return existing.getValue();
     ValueT v = createFn(key);
     (void)insert(key, v);
     return v;
@@ -137,6 +154,11 @@ public:
       return None;
     auto iter2 = iter->second.find(k2);
     return iter2 == iter->second.end() ? None : Optional<Value>(iter2->second);
+  }
+
+  NullablePtr<const InnerMap> find(const Key1 &k1) const {
+    auto iter = map.find(k1);
+    return iter == map.end() ? nullptr : &iter->second;
   }
 
   /// The sought value must be present.
@@ -237,6 +259,20 @@ public:
   }
   Optional<Value> find(const Key2 &k2, Key1 &k1) const { return find(k1, k2); }
 
+  /// Return the submap for a given Key1. May create one, after the fashion of
+  /// the standard libary.
+  const Key2Map &operator[](const Key1 &k1) { return map1[k1]; }
+  /// Return the submap for a given Key2. May create one, after the fashion of
+  /// the standard libary.
+  const Key1Map &operator[](const Key2 &k2) { return map2[k2]; }
+
+  NullablePtr<const Key2Map> find(const Key1 &k1) const {
+    return map1.find(k1);
+  }
+  NullablePtr<const Key1Map> find(const Key2 &k2) const {
+    return map2.find(k2);
+  }
+
   /// Element must be present.
   /// Return the erased value.
   Value findAndErase(const Key1 &k1, const Key2 &k2) {
@@ -250,12 +286,6 @@ public:
   Value findAndErase(const Key2 &k2, const Key1 &k1) {
     return findAndErase(k1, k2);
   }
-  /// Return the submap for a given Key1. May create one, after the fashion of
-  /// the standard libary.
-  const Key2Map &operator[](const Key1 &k1) { return map1[k1]; }
-  /// Return the submap for a given Key2. May create one, after the fashion of
-  /// the standard libary.
-  const Key1Map &operator[](const Key2 &k2) { return map2[k2]; }
 
   /// Invoke \p fn on each Key2 and Value matching (\p k1, *)
   void forEachValueMatching(
@@ -321,42 +351,19 @@ private:
 // MARK: Start of fine-grained-dependency-specific code
 //==============================================================================
 
-/// The entry point into this system from the frontend:
-/// Write out the .swiftdeps file for a frontend compilation of a primary file.
-bool emitReferenceDependencies(DiagnosticEngine &diags, SourceFile *SF,
-                               const DependencyTracker &depTracker,
-                               StringRef outputPath);
+/// Uses the provided module or source file to construct a dependency graph,
+/// which is provided back to the caller in the continuation callback.
+///
+/// \Note The returned graph should not be escaped from the callback.
+bool withReferenceDependencies(
+    llvm::PointerUnion<const ModuleDecl *, const SourceFile *> MSF,
+    const DependencyTracker &depTracker, StringRef outputPath,
+    bool alsoEmitDotFile, llvm::function_ref<bool(SourceFileDepGraph &&)>);
+
 //==============================================================================
 // MARK: Enums
 //==============================================================================
 
-/// Encode the current sorts of dependencies as kinds of nodes in the dependency
-/// graph, splitting the current *member* into \ref member and \ref
-/// potentialMember and adding \ref sourceFileProvide.
-
-enum class NodeKind {
-  topLevel,
-  nominal,
-  /// In the status quo scheme, *member* dependencies could have blank names
-  /// for the member, to indicate that the provider might add members.
-  /// This code uses a separate kind, \ref potentialMember. The holder field is
-  /// unused.
-  potentialMember,
-  /// Corresponding to the status quo *member* dependency with a non-blank
-  /// member.
-  member,
-  dynamicLookup,
-  externalDepend,
-  sourceFileProvide,
-  /// For iterating through the NodeKinds.
-  kindCount
-};
-
-/// Used for printing out NodeKinds to dot files, and dumping nodes for
-/// debugging.
-const std::string NodeKindNames[]{
-    "topLevel",      "nominal",        "potentialMember",  "member",
-    "dynamicLookup", "externalDepend", "sourceFileProvide"};
 
 /// Instead of the status quo scheme of two kinds of "Depends", cascading and
 /// non-cascading this code represents each entity ("Provides" in the status
@@ -398,14 +405,6 @@ public:
 
   NodeT *getInterface() const { return interface; }
   NodeT *getImplementation() const { return implementation; }
-
-  /// When creating an arc to represent a link from def to use, the use end of
-  /// the arc depends on if the dependency is a cascading one. Centralize that
-  /// choice here.
-  /// ("use" in the name represents the noun, not the verb.)
-  NodeT *useDependingOnCascading(bool ifCascades) {
-    return ifCascades ? interface : implementation;
-  }
 };
 
 //==============================================================================
@@ -422,6 +421,57 @@ class DependencyKey {
   // For import/export
   friend ::llvm::yaml::MappingTraits<DependencyKey>;
 
+public:
+  class Builder {
+  private:
+    const NodeKind kind;
+    const DeclAspect aspect;
+    const DeclContext *context;
+    StringRef name;
+
+  private:
+    // A private copy constructor so our clients are forced to use the
+    // move-only builder interface.
+    explicit Builder(NodeKind kind, DeclAspect aspect,
+                     const DeclContext *context, StringRef name)
+        : kind(kind), aspect(aspect), context(context), name(name) {}
+
+  public:
+    /// Creates a DependencyKey::Builder from the given \p kind and \p aspect
+    /// with a \c null context and empty name.
+    explicit Builder(NodeKind kind, DeclAspect aspect)
+        : kind(kind), aspect(aspect), context(nullptr), name("") {}
+
+  public:
+    /// Consumes this builder and returns a dependency key created from its
+    /// data.
+    DependencyKey build() &&;
+
+  public:
+    /// Extracts the data from the given \p ref into a this builder.
+    Builder fromReference(const evaluator::DependencyCollector::Reference &ref);
+
+  public:
+    /// Extracts the context data from the given declaration, if any.
+    Builder withContext(const Decl *D) &&;
+    /// Extracts the context data from the given decl-member pair, if any.
+    Builder withContext(std::pair<const NominalTypeDecl *, const ValueDecl *>
+                            holderAndMember) &&;
+
+  public:
+    /// Copies the name data for the given swiftdeps file into this builder.
+    Builder withName(StringRef swiftDeps) &&;
+    /// Copies the name of the given declaration into this builder, if any.
+    Builder withName(const Decl *decl) &&;
+    /// Extracts the name from the given decl-member pair, if any.
+    Builder withName(std::pair<const NominalTypeDecl *, const ValueDecl *>
+                         holderAndMember) &&;
+
+  private:
+    static StringRef getTopLevelName(const Decl *decl);
+  };
+
+private:
   NodeKind kind;
   DeclAspect aspect;
   /// The mangled context type name of the holder for \ref potentialMember, \ref
@@ -438,8 +488,8 @@ public:
         name() {}
 
   /// For constructing a key in the frontend.
-  DependencyKey(NodeKind kind, DeclAspect aspect, std::string context,
-                std::string name)
+  DependencyKey(NodeKind kind, DeclAspect aspect, const std::string &context,
+                const std::string &name)
       : kind(kind), aspect(aspect), context(context), name(name) {
     assert(verify());
   }
@@ -449,7 +499,7 @@ public:
   StringRef getContext() const { return context; }
   StringRef getName() const { return name; }
 
-  StringRef getSwiftDepsFromSourceFileProvide() const {
+  StringRef getSwiftDepsFromASourceFileProvideNodeKey() const {
     assert(getKind() == NodeKind::sourceFileProvide &&
            "Receiver must be sourceFileProvide.");
     return getName();
@@ -485,19 +535,20 @@ public:
   }
   bool isInterface() const { return getAspect() == DeclAspect::interface; }
 
-  /// Given some type of provided entity compute the context field of the key.
-  template <NodeKind kind, typename Entity>
-  static std::string computeContextForProvidedEntity(Entity);
+  DependencyKey correspondingImplementation() const {
+    return withAspect(DeclAspect::implementation);
+  }
 
-  /// Given some type of provided entity compute the name field of the key.
-  template <NodeKind kind, typename Entity>
-  static std::string computeNameForProvidedEntity(Entity);
+  DependencyKey withAspect(DeclAspect aspect) const {
+    return DependencyKey(kind, aspect, context, name);
+  }
 
-  /// Given some type of depended-upon entity create the key.
-  template <NodeKind kind, typename Entity>
-  static DependencyKey createDependedUponKey(const Entity &);
+  static DependencyKey createKeyForWholeSourceFile(DeclAspect,
+                                                   StringRef swiftDeps);
 
   std::string humanReadableName() const;
+
+  StringRef aspectName() const { return DeclAspectNames[size_t(aspect)]; }
 
   void dump(llvm::raw_ostream &os) const { os << asString() << "\n"; }
   SWIFT_DEBUG_DUMP { dump(llvm::errs()); }
@@ -534,6 +585,20 @@ struct std::hash<typename swift::fine_grained_dependencies::DeclAspect> {
     return size_t(aspect);
   }
 };
+template <>
+struct std::hash<typename swift::fine_grained_dependencies::NodeKind> {
+  size_t
+  operator()(const swift::fine_grained_dependencies::NodeKind kind) const {
+    return size_t(kind);
+  }
+};
+
+namespace swift {
+namespace fine_grained_dependencies {
+using ContextNameFingerprint =
+    std::tuple<std::string, std::string, Optional<std::string>>;
+}
+} // namespace swift
 
 //==============================================================================
 // MARK: DepGraphNode
@@ -577,7 +642,7 @@ class DepGraphNode {
   /// frontend creates an interface node,
   //  it adds a dependency to it from the implementation source file node (which
   //  has the intefaceHash as its fingerprint).
-  Optional<std::string> fingerprint;
+  Optional<Fingerprint> fingerprint;
 
   friend ::llvm::yaml::MappingTraits<DepGraphNode>;
 
@@ -585,10 +650,7 @@ public:
   /// See \ref SourceFileDepGraphNode::SourceFileDepGraphNode().
   DepGraphNode() : key(), fingerprint() {}
 
-  /// See SourceFileDepGraphNode::SourceFileDepGraphNode(...) and
-  /// ModuleDepGraphNode::ModuleDepGraphNode(...) Don't set swiftDeps on
-  /// creation because this field can change if a node is moved.
-  DepGraphNode(DependencyKey key, Optional<std::string> fingerprint)
+  DepGraphNode(DependencyKey key, Optional<Fingerprint> fingerprint)
       : key(key), fingerprint(fingerprint) {}
   DepGraphNode(const DepGraphNode &other) = default;
 
@@ -599,8 +661,12 @@ public:
 
   const DependencyKey &getKey() const { return key; }
 
-  const Optional<std::string> &getFingerprint() const { return fingerprint; }
+  /// Only used when the driver is reading a SourceFileDepGraphNode.
+  void setKey(const DependencyKey &key) {
+    this->key = key;
+  }
 
+  const Optional<Fingerprint> getFingerprint() const { return fingerprint; }
   /// When driver reads a SourceFileDepGraphNode, it may be a node that was
   /// created to represent a name-lookup (a.k.a a "depend") in the frontend. In
   /// that case, the node represents an entity that resides in some other file
@@ -609,7 +675,7 @@ public:
   /// (someday) have a fingerprint. In order to preserve the
   /// ModuleDepGraphNode's identity but bring its fingerprint up to date, it
   /// needs to set the fingerprint *after* the node has been created.
-  void setFingerprint(Optional<std::string> fp) { fingerprint = fp; }
+  void setFingerprint(Optional<Fingerprint> fp) { fingerprint = fp; }
 
   SWIFT_DEBUG_DUMP;
   void dump(llvm::raw_ostream &os) const;
@@ -640,12 +706,12 @@ class SourceFileDepGraphNode : public DepGraphNode {
   size_t sequenceNumber = ~0;
 
   /// Holds the sequence numbers of definitions I depend upon.
-  std::unordered_set<size_t> defsIDependUpon;
+  llvm::SetVector<size_t> defsIDependUpon;
 
   /// True iff a Decl exists for this node.
   /// If a provides and a depends in the existing system both have the same key,
   /// only one SourceFileDepGraphNode is emitted.
-  bool isProvides;
+  bool isProvides = false;
 
   friend ::llvm::yaml::MappingContextTraits<SourceFileDepGraphNode,
                                             SourceFileDepGraph>;
@@ -653,10 +719,10 @@ class SourceFileDepGraphNode : public DepGraphNode {
 public:
   /// When the driver imports a node create an uninitialized instance for
   /// deserializing.
-  SourceFileDepGraphNode() : DepGraphNode(), sequenceNumber(~0) {}
+  SourceFileDepGraphNode() : DepGraphNode() {}
 
   /// Used by the frontend to build nodes.
-  SourceFileDepGraphNode(DependencyKey key, Optional<std::string> fingerprint,
+  SourceFileDepGraphNode(DependencyKey key, Optional<Fingerprint> fingerprint,
                          bool isProvides)
       : DepGraphNode(key, fingerprint), isProvides(isProvides) {
     assert(key.verify());
@@ -684,20 +750,48 @@ public:
   }
 
   /// Record the sequence number, \p n, of another use.
+  /// The relationship between an interface and its implementation is NOT
+  /// included here. See \c
+  /// SourceFileDepGraph::findExistingNodePairOrCreateAndAddIfNew.
   void addDefIDependUpon(size_t n) {
     if (n != getSequenceNumber())
       defsIDependUpon.insert(n);
   }
 
   std::string humanReadableName() const {
-    return DepGraphNode::humanReadableName("here");
+    return DepGraphNode::humanReadableName(getIsProvides() ? "here"
+                                                           : "somewhere else");
   }
+
+  SWIFT_DEBUG_DUMP;
+  void dump(llvm::raw_ostream &os) const;
 
   bool verify() const {
     DepGraphNode::verify();
     assert(getIsProvides() || isDepends());
+    assert(verifySequenceNumber());
     return true;
   }
+
+  bool verifySequenceNumber() const {
+    const auto &k = getKey();
+    if (k.getKind() != NodeKind::sourceFileProvide)
+      return true;
+    switch (k.getAspect()) {
+    case DeclAspect::interface:
+      assert(getSequenceNumber() == sourceFileProvidesInterfaceSequenceNumber);
+      return true;
+    case DeclAspect::implementation:
+      assert(getSequenceNumber() ==
+             sourceFileProvidesImplementationSequenceNumber);
+      return true;
+    default:
+      llvm_unreachable("neither interface nor implementation");
+    }
+  }
+  static constexpr const size_t sourceFileProvidesInterfaceSequenceNumber = 0;
+  static constexpr const size_t sourceFileProvidesImplementationSequenceNumber =
+      1;
 };
 
 //==============================================================================
@@ -732,21 +826,12 @@ public:
     forEachNode([&](SourceFileDepGraphNode *n) { delete n; });
   }
 
-  /// Goes at the start of an emitted YAML file to help tools recognize it.
-  /// May vary in the future according to version, etc.
-  std::string yamlProlog(const bool hadCompilationError) const {
-    return std::string("# Experimental\n") +
-           (!hadCompilationError ? ""
-                                 : "# Dependencies are unknown because a "
-                                   "compilation error occurred.\n");
-  }
-
   SourceFileDepGraphNode *getNode(size_t sequenceNumber) const;
 
   InterfaceAndImplementationPair<SourceFileDepGraphNode>
   getSourceFileNodePair() const;
 
-  StringRef getSwiftDepsFromSourceFileProvide() const;
+  StringRef getSwiftDepsOfJobThatProducedThisGraph() const;
 
   std::string getGraphID() const {
     return getSourceFileNodePair().getInterface()->getKey().humanReadableName();
@@ -770,12 +855,16 @@ public:
   /// The frontend creates a pair of nodes for every tracked Decl and the source
   /// file itself.
   InterfaceAndImplementationPair<SourceFileDepGraphNode>
-  findExistingNodePairOrCreateAndAddIfNew(NodeKind k, StringRef context,
-                                          StringRef name,
-                                          Optional<std::string> fingerprint);
+  findExistingNodePairOrCreateAndAddIfNew(const DependencyKey &interfaceKey,
+                                          Optional<Fingerprint> fingerprint);
 
-  SourceFileDepGraphNode *findExistingNodeOrCreateIfNew(
-      DependencyKey key, Optional<std::string> fingerprint, bool isProvides);
+  NullablePtr<SourceFileDepGraphNode>
+  findExistingNode(const DependencyKey &key);
+
+  SourceFileDepGraphNode *
+  findExistingNodeOrCreateIfNew(const DependencyKey &key,
+                                const Optional<Fingerprint> fingerprint,
+                                bool isProvides);
 
   /// \p Use is the Node that must be rebuilt when \p def changes.
   /// Record that fact in the graph.
@@ -785,12 +874,16 @@ public:
   }
 
   /// Read a swiftdeps file at \p path and return a SourceFileDepGraph if
-  /// successful.
-  Optional<SourceFileDepGraph> static loadFromPath(StringRef);
+  /// successful. If \p allowSwiftModule is true, try to load the information
+  /// from a swiftmodule file if appropriate.
+  Optional<SourceFileDepGraph> static loadFromPath(
+      StringRef, bool allowSwiftModule = false);
 
   /// Read a swiftdeps file from \p buffer and return a SourceFileDepGraph if
   /// successful.
   Optional<SourceFileDepGraph> static loadFromBuffer(llvm::MemoryBuffer &);
+  Optional<SourceFileDepGraph> static loadFromSwiftModuleBuffer(
+      llvm::MemoryBuffer &);
 
   void verifySame(const SourceFileDepGraph &other) const;
 
@@ -800,14 +893,15 @@ public:
   /// Ensure that when read, the graph is the same as what was written.
   bool verifyReadsWhatIsWritten(StringRef path) const;
 
-private:
+  bool verifySequenceNumber() const;
+
+  void emitDotFile(StringRef outputPath, DiagnosticEngine &diags);
+
   void addNode(SourceFileDepGraphNode *n) {
     n->setSequenceNumber(allNodes.size());
-    assert(allNodes.size() < 2 ==
-               (n->getKey().getKind() == NodeKind::sourceFileProvide) &&
-           "First two and only first two nodes should be sourceFileProvide "
-           "nodes.");
     allNodes.push_back(n);
+    assert(n->verifySequenceNumber() &&
+           "Certain nodes must be in certain places");
   }
 };
 
@@ -892,7 +986,7 @@ private:
   }
   void emitArcs() {
     g.forEachArc([&](const NodeT *def, const NodeT *use) {
-      if (includeGraphArc(use, def))
+      if (includeGraphArc(def, use))
         emitGraphArc(def, use);
     });
   }
@@ -938,51 +1032,5 @@ private:
 
 } // end namespace fine_grained_dependencies
 } // end namespace swift
-
-//==============================================================================
-// MARK: Declarations for YAMLTraits for reading/writing of SourceFileDepGraph
-//==============================================================================
-
-// This introduces a redefinition where ever std::is_same_t<size_t, uint64_t>
-// holds
-#if !(defined(__linux__) || defined(_WIN64))
-LLVM_YAML_DECLARE_SCALAR_TRAITS(size_t, QuotingType::None)
-#endif
-LLVM_YAML_DECLARE_ENUM_TRAITS(swift::fine_grained_dependencies::NodeKind)
-LLVM_YAML_DECLARE_ENUM_TRAITS(swift::fine_grained_dependencies::DeclAspect)
-LLVM_YAML_DECLARE_MAPPING_TRAITS(
-    swift::fine_grained_dependencies::DependencyKey)
-LLVM_YAML_DECLARE_MAPPING_TRAITS(swift::fine_grained_dependencies::DepGraphNode)
-
-namespace llvm {
-namespace yaml {
-template <>
-struct MappingContextTraits<
-    swift::fine_grained_dependencies::SourceFileDepGraphNode,
-    swift::fine_grained_dependencies::SourceFileDepGraph> {
-  using SourceFileDepGraphNode =
-      swift::fine_grained_dependencies::SourceFileDepGraphNode;
-  using SourceFileDepGraph =
-      swift::fine_grained_dependencies::SourceFileDepGraph;
-
-  static void mapping(IO &io, SourceFileDepGraphNode &node,
-                      SourceFileDepGraph &g);
-};
-
-template <>
-struct SequenceTraits<
-    std::vector<swift::fine_grained_dependencies::SourceFileDepGraphNode *>> {
-  using SourceFileDepGraphNode =
-      swift::fine_grained_dependencies::SourceFileDepGraphNode;
-  using NodeVec = std::vector<SourceFileDepGraphNode *>;
-  static size_t size(IO &, NodeVec &vec);
-  static SourceFileDepGraphNode &element(IO &, NodeVec &vec, size_t index);
-};
-
-} // namespace yaml
-} // namespace llvm
-
-LLVM_YAML_DECLARE_MAPPING_TRAITS(
-    swift::fine_grained_dependencies::SourceFileDepGraph)
 
 #endif // SWIFT_AST_FINE_GRAINED_DEPENDENCIES_H

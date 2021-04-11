@@ -18,11 +18,18 @@
 #ifndef SWIFT_BASIC_DIAGNOSTICENGINE_H
 #define SWIFT_BASIC_DIAGNOSTICENGINE_H
 
-#include "swift/AST/TypeLoc.h"
+#include "swift/AST/ActorIsolation.h"
 #include "swift/AST/DeclNameLoc.h"
 #include "swift/AST/DiagnosticConsumer.h"
+#include "swift/AST/TypeLoc.h"
+#include "swift/Localization/LocalizationFormat.h"
+#include "llvm/ADT/BitVector.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/Allocator.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
+#include "llvm/Support/SaveAndRestore.h"
 #include "llvm/Support/VersionTuple.h"
 
 namespace swift {
@@ -69,7 +76,24 @@ namespace swift {
       typedef T type;
     };
   }
-    
+
+  /// A family of wrapper types for compiler data types that forces its
+  /// underlying data to be formatted with full qualification.
+  ///
+  /// So far, this is only useful for \c Type, hence the SFINAE'ing.
+  template <typename T, typename = void> struct FullyQualified {};
+
+  template <typename T>
+  struct FullyQualified<
+      T, typename std::enable_if<std::is_convertible<T, Type>::value>::type> {
+    Type t;
+
+  public:
+    FullyQualified(T t) : t(t){};
+
+    Type getType() const { return t; }
+  };
+
   /// Describes the kind of diagnostic argument we're storing.
   ///
   enum class DiagnosticArgumentKind {
@@ -81,6 +105,7 @@ namespace swift {
     ValueDecl,
     Type,
     TypeRepr,
+    FullyQualifiedType,
     PatternKind,
     SelfAccessKind,
     ReferenceOwnership,
@@ -89,6 +114,7 @@ namespace swift {
     DeclAttribute,
     VersionTuple,
     LayoutConstraint,
+    ActorIsolation,
   };
 
   namespace diag {
@@ -110,6 +136,7 @@ namespace swift {
       ValueDecl *TheValueDecl;
       Type TypeVal;
       TypeRepr *TyR;
+      FullyQualified<Type> FullyQualifiedTypeVal;
       PatternKind PatternKindVal;
       SelfAccessKind SelfAccessKindVal;
       ReferenceOwnership ReferenceOwnershipVal;
@@ -118,6 +145,7 @@ namespace swift {
       const DeclAttribute *DeclAttributeVal;
       llvm::VersionTuple VersionVal;
       LayoutConstraint LayoutConstraintVal;
+      ActorIsolation ActorIsolationVal;
     };
     
   public:
@@ -165,6 +193,10 @@ namespace swift {
       : Kind(DiagnosticArgumentKind::TypeRepr), TyR(T) {
     }
 
+    DiagnosticArgument(FullyQualified<Type> FQT)
+        : Kind(DiagnosticArgumentKind::FullyQualifiedType),
+          FullyQualifiedTypeVal(FQT) {}
+
     DiagnosticArgument(const TypeLoc &TL) {
       if (TypeRepr *tyR = TL.getTypeRepr()) {
         Kind = DiagnosticArgumentKind::TypeRepr;
@@ -205,6 +237,12 @@ namespace swift {
     DiagnosticArgument(LayoutConstraint L)
       : Kind(DiagnosticArgumentKind::LayoutConstraint), LayoutConstraintVal(L) {
     }
+
+    DiagnosticArgument(ActorIsolation AI)
+      : Kind(DiagnosticArgumentKind::ActorIsolation),
+        ActorIsolationVal(AI) {
+    }
+
     /// Initializes a diagnostic argument using the underlying type of the
     /// given enum.
     template<
@@ -255,7 +293,12 @@ namespace swift {
       assert(Kind == DiagnosticArgumentKind::TypeRepr);
       return TyR;
     }
-    
+
+    FullyQualified<Type> getAsFullyQualifiedType() const {
+      assert(Kind == DiagnosticArgumentKind::FullyQualifiedType);
+      return FullyQualifiedTypeVal;
+    }
+
     PatternKind getAsPatternKind() const {
       assert(Kind == DiagnosticArgumentKind::PatternKind);
       return PatternKindVal;
@@ -295,8 +338,25 @@ namespace swift {
       assert(Kind == DiagnosticArgumentKind::LayoutConstraint);
       return LayoutConstraintVal;
     }
+
+    ActorIsolation getAsActorIsolation() const {
+      assert(Kind == DiagnosticArgumentKind::ActorIsolation);
+      return ActorIsolationVal;
+    }
   };
-  
+
+  /// Describes the current behavior to take with a diagnostic.
+  /// Ordered from most severe to least.
+  enum class DiagnosticBehavior : uint8_t {
+    Unspecified = 0,
+    Fatal,
+    Error,
+    Warning,
+    Remark,
+    Note,
+    Ignore,
+  };
+
   struct DiagnosticFormatOptions {
     const std::string OpeningQuotationMark;
     const std::string ClosingQuotationMark;
@@ -347,6 +407,7 @@ namespace swift {
     SourceLoc Loc;
     bool IsChildNote = false;
     const swift::Decl *Decl = nullptr;
+    DiagnosticBehavior BehaviorLimit = DiagnosticBehavior::Unspecified;
 
     friend DiagnosticEngine;
 
@@ -374,10 +435,12 @@ namespace swift {
     bool isChildNote() const { return IsChildNote; }
     SourceLoc getLoc() const { return Loc; }
     const class Decl *getDecl() const { return Decl; }
+    DiagnosticBehavior getBehaviorLimit() const { return BehaviorLimit; }
 
     void setLoc(SourceLoc loc) { Loc = loc; }
     void setIsChildNote(bool isChildNote) { IsChildNote = isChildNote; }
     void setDecl(const class Decl *decl) { Decl = decl; }
+    void setBehaviorLimit(DiagnosticBehavior limit){ BehaviorLimit = limit; }
 
     /// Returns true if this object represents a particular diagnostic.
     ///
@@ -446,6 +509,11 @@ namespace swift {
     
     /// Flush the active diagnostic to the diagnostic output engine.
     void flush();
+
+    /// Prevent the diagnostic from behaving more severely than \p limit. For
+    /// instance, if \c DiagnosticBehavior::Warning is passed, an error will be
+    /// emitted as a warning, but a note will still be emitted as a note.
+    InFlightDiagnostic &limitBehavior(DiagnosticBehavior limit);
 
     /// Add a token-based range to the currently-active diagnostic.
     InFlightDiagnostic &highlight(SourceRange R);
@@ -551,19 +619,6 @@ namespace swift {
   /// Class to track, map, and remap diagnostic severity and fatality
   ///
   class DiagnosticState {
-  public:
-    /// Describes the current behavior to take with a diagnostic
-    enum class Behavior : uint8_t {
-      Unspecified,
-      Ignore,
-      Note,
-      Remark,
-      Warning,
-      Error,
-      Fatal,
-    };
-
-  private:
     /// Whether we should continue to emit diagnostics, even after a
     /// fatal error
     bool showDiagnosticsAfterFatalError = false;
@@ -581,17 +636,19 @@ namespace swift {
     bool anyErrorOccurred = false;
 
     /// Track the previous emitted Behavior, useful for notes
-    Behavior previousBehavior = Behavior::Unspecified;
+    DiagnosticBehavior previousBehavior = DiagnosticBehavior::Unspecified;
 
-    /// Track settable, per-diagnostic state that we store
-    std::vector<Behavior> perDiagnosticBehavior;
+    /// Track which diagnostics should be ignored.
+    llvm::BitVector ignoredDiagnostics;
+
+    friend class DiagnosticStateRAII;
 
   public:
     DiagnosticState();
 
     /// Figure out the Behavior for the given diagnostic, taking current
     /// state such as fatality into account.
-    Behavior determineBehavior(DiagID id);
+    DiagnosticBehavior determineBehavior(const Diagnostic &diag);
 
     bool hadAnyError() const { return anyErrorOccurred; }
     bool hasFatalErrorOccurred() const { return fatalErrorOccurred; }
@@ -616,9 +673,9 @@ namespace swift {
       fatalErrorOccurred = false;
     }
 
-    /// Set per-diagnostic behavior
-    void setDiagnosticBehavior(DiagID id, Behavior behavior) {
-      perDiagnosticBehavior[(unsigned)id] = behavior;
+    /// Set whether a diagnostic should be ignored.
+    void setIgnoredDiagnostic(DiagID id, bool ignored) {
+      ignoredDiagnostics[(unsigned)id] = ignored;
     }
 
   private:
@@ -629,7 +686,7 @@ namespace swift {
     DiagnosticState(DiagnosticState &&) = default;
     DiagnosticState &operator=(DiagnosticState &&) = default;
   };
-    
+
   /// Class responsible for formatting diagnostics and presenting them
   /// to the user.
   class DiagnosticEngine {
@@ -663,6 +720,10 @@ namespace swift {
     /// but rather stored until all transactions complete.
     llvm::StringSet<llvm::BumpPtrAllocator &> TransactionStrings;
 
+    /// Diagnostic producer to handle the logic behind retrieving a localized
+    /// diagnostic message.
+    std::unique_ptr<diag::LocalizationProducer> localization;
+
     /// The number of open diagnostic transactions. Diagnostics are only
     /// emitted once all transactions have closed.
     unsigned TransactionCount = 0;
@@ -676,15 +737,17 @@ namespace swift {
     /// Print diagnostic names after their messages
     bool printDiagnosticNames = false;
 
-    /// Use descriptive diagnostic style when available.
-    bool useDescriptiveDiagnostics = false;
-
     /// Path to diagnostic documentation directory.
     std::string diagnosticDocumentationPath = "";
+
+    /// Whether we are actively pretty-printing a declaration as part of
+    /// diagnostics.
+    bool IsPrettyPrintingDecl = false;
 
     friend class InFlightDiagnostic;
     friend class DiagnosticTransaction;
     friend class CompoundDiagnosticTransaction;
+    friend class DiagnosticStateRAII;
 
   public:
     explicit DiagnosticEngine(SourceManager &SourceMgr)
@@ -703,6 +766,11 @@ namespace swift {
     }
     bool getShowDiagnosticsAfterFatalError() {
       return state.getShowDiagnosticsAfterFatalError();
+    }
+
+    void flushConsumers() {
+      for (auto consumer : Consumers)
+        consumer->flush();
     }
 
     /// Whether to skip emitting warnings
@@ -725,13 +793,6 @@ namespace swift {
       return printDiagnosticNames;
     }
 
-    void setUseDescriptiveDiagnostics(bool val) {
-       useDescriptiveDiagnostics = val;
-    }
-    bool getUseDescriptiveDiagnostics() const {
-      return useDescriptiveDiagnostics;
-    }
-
     void setDiagnosticDocumentationPath(std::string path) {
       diagnosticDocumentationPath = path;
     }
@@ -739,8 +800,35 @@ namespace swift {
       return diagnosticDocumentationPath;
     }
 
+    bool isPrettyPrintingDecl() const { return IsPrettyPrintingDecl; }
+
+    void setLocalization(std::string locale, std::string path) {
+      assert(!locale.empty());
+      assert(!path.empty());
+      llvm::SmallString<128> filePath(path);
+      llvm::sys::path::append(filePath, locale);
+      llvm::sys::path::replace_extension(filePath, ".db");
+
+      // If the serialized diagnostics file not available,
+      // fallback to the `YAML` file.
+      if (llvm::sys::fs::exists(filePath)) {
+        if (auto file = llvm::MemoryBuffer::getFile(filePath)) {
+          localization = std::make_unique<diag::SerializedLocalizationProducer>(
+              std::move(file.get()), getPrintDiagnosticNames());
+        }
+      } else {
+        llvm::sys::path::replace_extension(filePath, ".yaml");
+        // In case of missing localization files, we should fallback to messages
+        // from `.def` files.
+        if (llvm::sys::fs::exists(filePath)) {
+          localization = std::make_unique<diag::YAMLLocalizationProducer>(
+              filePath.str(), getPrintDiagnosticNames());
+        }
+      }
+    }
+
     void ignoreDiagnostic(DiagID id) {
-      state.setDiagnosticBehavior(id, DiagnosticState::Behavior::Ignore);
+      state.setIgnoredDiagnostic(id, true);
     }
 
     void resetHadAnyError() {
@@ -960,8 +1048,8 @@ namespace swift {
     void emitTentativeDiagnostics();
 
   public:
-    static const char *diagnosticStringFor(const DiagID id,
-                                           bool printDiagnosticName);
+    llvm::StringRef diagnosticStringFor(const DiagID id,
+                                        bool printDiagnosticNames);
 
     /// If there is no clear .dia file for a diagnostic, put it in the one
     /// corresponding to the SourceLoc given here.
@@ -973,6 +1061,33 @@ namespace swift {
     SourceLoc getDefaultDiagnosticLoc() const {
       return bufferIndirectlyCausingDiagnostic;
     }
+  };
+
+  /// Remember details about the state of a diagnostic engine and restore them
+  /// when the object is destroyed.
+  ///
+  /// Diagnostic engines contain state about the most recent diagnostic emitted
+  /// which influences subsequent emissions; in particular, if you try to emit
+  /// a note and the previous diagnostic was ignored, the note will be ignored
+  /// too. This can be a problem in code structured like:
+  ///
+  ///     D->diagnose(diag::an_error);
+  ///     if (conditionWhichMightEmitDiagnostics())
+  ///        D->diagnose(diag::a_note); // might be affected by diagnostics from
+  ///                                   // conditionWhichMightEmitDiagnostics()!
+  ///
+  /// To prevent this, functions which are called for their return values but
+  /// may emit diagnostics as a side effect can use \c DiagnosticStateRAII to
+  /// ensure that their changes to diagnostic engine state don't leak out and
+  /// affect the caller's diagnostics.
+  class DiagnosticStateRAII {
+    llvm::SaveAndRestore<DiagnosticBehavior> previousBehavior;
+
+  public:
+    DiagnosticStateRAII(DiagnosticEngine &diags)
+      : previousBehavior(diags.state.previousBehavior) {}
+
+    ~DiagnosticStateRAII() {}
   };
 
   class BufferIndirectlyCausingDiagnosticRAII {
@@ -1028,6 +1143,21 @@ namespace swift {
         Engine.TransactionStrings.clear();
         Engine.TransactionAllocator.Reset();
       }
+    }
+
+    bool hasErrors() const {
+      ArrayRef<Diagnostic> diagnostics(Engine.TentativeDiagnostics.begin() +
+                                           PrevDiagnostics,
+                                       Engine.TentativeDiagnostics.end());
+
+      for (auto &diagnostic : diagnostics) {
+        auto behavior = Engine.state.determineBehavior(diagnostic);
+        if (behavior == DiagnosticBehavior::Fatal ||
+            behavior == DiagnosticBehavior::Error)
+          return true;
+      }
+
+      return false;
     }
 
     /// Abort and close this transaction and erase all diagnostics

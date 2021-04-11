@@ -1,4 +1,5 @@
 import Submodule
+@_implementationOnly import PrivateSubmodule
 
 private enum PE<T> {
   case A
@@ -130,6 +131,7 @@ extension Int : PrivateProtocol {
 }
 
 @inline(never)
+@_semantics("optimize.no.crossmodule")
 private func printFooExistential(_ p: PrivateProtocol) {
   print(p.foo())
 }
@@ -161,6 +163,25 @@ public class FooClass: PrivateProto {
     print(321)
   }
 }
+
+final class Internalclass {
+  public var publicint: Int = 27
+}
+
+final public class Outercl {
+  var ic: Internalclass = Internalclass()
+}
+
+@inline(never)
+public func classWithPublicProperty<T>(_ t: T) -> Int {
+  return createInternal().ic.publicint
+}
+
+@inline(never)
+func createInternal() -> Outercl {
+  return Outercl()
+}
+
 
 @inline(never)
 @_semantics("optimize.sil.specialize.generic.never")
@@ -247,3 +268,11 @@ public func callUnrelated<T>(_ t: T) -> T {
   return t
 }
 
+public func callImplementationOnly<T>(_ t: T) -> T {
+  let p = PrivateStr(i: 27)
+  print(p.test())
+  return t
+}
+
+
+public let globalLet = 529387

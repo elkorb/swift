@@ -17,7 +17,6 @@
 #include "swift/Basic/LLVM.h"
 #include "swift/Basic/SourceLoc.h"
 #include "llvm/ADT/PointerUnion.h"
-#include <string>
 
 namespace clang {
   class Module;
@@ -42,6 +41,16 @@ namespace swift {
 /// An abstract class used to traverse the AST and provide source information.
 /// Visitation happens in source-order and compiler-generated semantic info,
 /// like implicit declarations, is ignored.
+///
+/// If \c walkTo*Pre returns \c true, the children are visited and \c
+/// walkTo*Post is called after all children have been visited.
+/// If \c walkTo*Pre returns \c false, the corresponding \c walkTo*Post call
+/// will not be issued.
+///
+/// If \c walkTo*Post returns \c false, the traversal is terminated. No more
+/// \c walk* calls are issued. Nodes that have already received a \c walkTo*Pre
+/// call will *not* receive a \c walkTo*Post call.
+/// If \c walkTo*Post returns \c true, the traversal continues.
 class SourceEntityWalker {
 public:
   /// Walks the provided source file.
@@ -119,6 +128,16 @@ public:
   virtual bool visitSubscriptReference(ValueDecl *D, CharSourceRange Range,
                                        ReferenceMetaData Data,
                                        bool IsOpenBracket);
+
+  /// This method is called when a ValueDecl for a callAsFunction decl is
+  /// referenced in source. If it returns false, the remaining traversal is
+  /// terminated and returns failure.
+  ///
+  /// \param D the referenced decl.
+  /// \param Range the source range of the source reference.
+  /// \param Data whether this is a read, write or read/write access, etc.
+  virtual bool visitCallAsFunctionReference(ValueDecl *D, CharSourceRange Range,
+                                            ReferenceMetaData Data);
 
   /// This method is called for each keyword argument in a call expression.
   /// If it returns false, the remaining traversal is terminated and returns

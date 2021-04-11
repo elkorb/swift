@@ -23,8 +23,9 @@ except ImportError:
     # py3
     from io import StringIO
 
+from build_swift.build_swift.wrappers import xcrun
+
 from swift_build_support import shell
-from swift_build_support import xcrun
 from swift_build_support.products import Ninja
 from swift_build_support.targets import StdlibDeploymentTarget
 from swift_build_support.toolchain import host_toolchain
@@ -98,9 +99,9 @@ class NinjaTestCase(unittest.TestCase):
         if platform.system() == "Darwin":
             expect_env = (
                 "env "
-                "'CFLAGS=-isysroot {sysroot} -mmacosx-version-min=10.9' "
+                "'CFLAGS=-isysroot {sysroot}' "
                 "CXX={cxx} "
-                "LDFLAGS=-mmacosx-version-min=10.9 "
+                "'LDFLAGS=-isysroot {sysroot}' "
             ).format(
                 cxx=self.toolchain.cxx,
                 sysroot=xcrun.sdk_path('macosx')

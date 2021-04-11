@@ -1,5 +1,6 @@
 // RUN: %empty-directory(%t)
 // RUN: %target-build-swift -o %t/ErrorBridged -DPTR_SIZE_%target-ptrsize -module-name main %s
+// RUN: %target-codesign %t/ErrorBridged
 // RUN: %target-run %t/ErrorBridged
 // REQUIRES: executable_test
 // REQUIRES: objc_interop
@@ -21,7 +22,7 @@ protocol OtherProtocol {
   var otherProperty: String { get }
 }
 
-protocol OtherClassProtocol : class {
+protocol OtherClassProtocol : AnyObject {
   var otherClassProperty: String { get }
 }
 
@@ -770,7 +771,7 @@ ErrorBridgingTests.test("@objc error domains for nested types") {
 ErrorBridgingTests.test("error-to-NSObject casts") {
   let error = MyCustomizedError(code: 12345)
 
-  if #available(macOS 9999, iOS 9999, tvOS 9999, watchOS 9999, *) {
+  if #available(macOS 10.15.4, iOS 13.4, watchOS 6.2, tvOS 13.4, *) {
     // Unconditional cast
     let nsErrorAsObject1 = unconditionalCast(error, to: NSObject.self)
     let nsError1 = unconditionalCast(nsErrorAsObject1, to: NSError.self)
@@ -800,7 +801,7 @@ ErrorBridgingTests.test("NSError-to-Error casts") {
     expectTrue(something is Error)
   }
 
-  if #available(macOS 9999, iOS 9999, tvOS 9999, watchOS 9999, *) {
+  if #available(macOS 10.15.4, iOS 13.4, watchOS 6.2, tvOS 13.4, *) {
     // TODO: Wrap some leak checking around this
     // Until then, this is a helpful debug tool
 		should_not_leak_nserror()
@@ -813,7 +814,7 @@ ErrorBridgingTests.test("CFError-to-Error casts") {
     expectTrue(something is Error)
   }
 
-  if #available(macOS 9999, iOS 9999, tvOS 9999, watchOS 9999, *) {
+  if #available(macOS 10.15.4, iOS 13.4, watchOS 6.2, tvOS 13.4, *) {
     // TODO: Wrap some leak checking around this
     // Until then, this is a helpful debug tool
 		should_not_leak_cferror()
@@ -826,13 +827,62 @@ enum MyError: Error {
 
 ErrorBridgingTests.test("SR-9207 crash in failed cast to NSError") {
 
-  if #available(macOS 9999, iOS 9999, tvOS 9999, watchOS 9999, *) {
+  if #available(macOS 10.15.4, iOS 13.4, watchOS 6.2, tvOS 13.4, *) {
     let error = MyError.someThing
     let foundationError = error as NSError
 
     if let urlError = foundationError as? URLError {
       expectUnreachable()
     }
+  }
+}
+
+// SR-7652
+
+enum SwiftError: Error, CustomStringConvertible {
+  case something
+  var description: String { return "Something" }
+}
+
+ErrorBridgingTests.test("Swift Error bridged to NSError description") {
+  func checkDescription() {
+    let bridgedError = SwiftError.something as NSError
+    expectEqual("Something", bridgedError.description)
+  }
+
+  if #available(macOS 10.16, iOS 14.0, watchOS 7.0, tvOS 14.0, *) {
+    checkDescription()
+  }
+}
+
+struct SwiftError2: Error, CustomStringConvertible {
+  var description: String
+}
+
+ErrorBridgingTests.test("Swift Error description memory management") {
+  func checkDescription() {
+    // Generate a non-small, non-constant NSString bridged to String.
+    let str = (["""
+      There once was a gigantic genie
+      Who turned out to be a real meanie
+      I wished for flight
+      And with all his might
+      He gave me a propellor beanie
+    """] as NSArray).description
+    let error = SwiftError2(description: str)
+    let bridgedError = error as NSError
+
+    // Ensure that the bridged NSError description method doesn't overrelease
+    // the error value.
+    for _ in 0 ..< 10 {
+      autoreleasepool {
+        expectEqual(str, bridgedError.description)
+      }
+    }
+  }
+
+  if #available(macOS 10.16, iOS 14.0, watchOS 7.0, tvOS 14.0, *) {
+    checkDescription()
   }
 }
 

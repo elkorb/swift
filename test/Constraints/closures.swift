@@ -63,7 +63,7 @@ var evenOrOdd : (Int) -> String = {$0 % 2 == 0 ? "even" : "odd"}
 
 // <rdar://problem/15367882>
 func foo() {
-  not_declared({ $0 + 1 }) // expected-error{{use of unresolved identifier 'not_declared'}}
+  not_declared({ $0 + 1 }) // expected-error{{cannot find 'not_declared' in scope}}
 }
 
 // <rdar://problem/15536725>
@@ -168,7 +168,7 @@ func SR3671() {
   ;
 
   // Also a valid call (!!)
-  { $0 { $0 } } { $0 { 1 } }  // expected-error {{expression resolves to an unused function}}
+  { $0 { $0 } } { $0 { 1 } }  // expected-error {{function is unused}}
   consume(111)
 }
 
@@ -186,7 +186,7 @@ func testMap() {
 }
 
 // <rdar://problem/22414757> "UnresolvedDot" "in wrong phase" assertion from verifier
-[].reduce { $0 + $1 }  // expected-error {{cannot invoke 'reduce' with an argument list of type '(@escaping (_, _) -> _)'}}
+[].reduce { $0 + $1 }  // expected-error {{missing argument for parameter #1 in call}}
 
 
 
@@ -273,7 +273,6 @@ func verify_NotAC_to_AC_failure(_ arg: () -> ()) {
 // SR-1069 - Error diagnostic refers to wrong argument
 class SR1069_W<T> {
   func append<Key: AnyObject>(value: T, forKey key: Key) where Key: Hashable {}
-  // expected-note@-1 {{where 'Key' = 'Object?'}}
 }
 class SR1069_C<T> { let w: SR1069_W<(AnyObject, T) -> ()> = SR1069_W() }
 struct S<T> {
@@ -281,9 +280,10 @@ struct S<T> {
 
   func subscribe<Object: AnyObject>(object: Object?, method: (Object, T) -> ()) where Object: Hashable {
     let wrappedMethod = { (object: AnyObject, value: T) in }
-    // expected-error @+2 {{instance method 'append(value:forKey:)' requires that 'Object?' be a class type}}
-    // expected-note @+1 {{wrapped type 'Object' satisfies this requirement}}
     cs.forEach { $0.w.append(value: wrappedMethod, forKey: object) }
+    // expected-error@-1 {{value of optional type 'Object?' must be unwrapped to a value of type 'Object'}}
+    // expected-note@-2 {{coalesce using '??' to provide a default when the optional value contains 'nil'}}
+    // expected-note@-3 {{force-unwrap using '!' to abort execution if the optional value contains 'nil'}}
   }
 }
 
@@ -345,7 +345,7 @@ var afterMessageCount : Int?
 func uintFunc() -> UInt {}
 func takeVoidVoidFn(_ a : () -> ()) {}
 takeVoidVoidFn { () -> Void in
-  afterMessageCount = uintFunc()  // expected-error {{cannot assign value of type 'UInt' to type 'Int'}}
+  afterMessageCount = uintFunc()  // expected-error {{cannot assign value of type 'UInt' to type 'Int?'}} {{23-23=Int(}} {{33-33=)}}
 }
 
 // <rdar://problem/19997471> Swift: Incorrect compile error when calling a function inside a closure
@@ -371,13 +371,13 @@ func someGeneric19997471<T>(_ x: T) {
 func rdar21078316() {
   var foo : [String : String]?
   var bar : [(String, String)]?
-  bar = foo.map { ($0, $1) }  // expected-error {{contextual closure type '([String : String]) throws -> U' expects 1 argument, but 2 were used in closure body}}
+  bar = foo.map { ($0, $1) }  // expected-error {{contextual closure type '([String : String]) throws -> [(String, String)]' expects 1 argument, but 2 were used in closure body}}
 }
 
 
 // <rdar://problem/20978044> QoI: Poor diagnostic when using an incorrect tuple element in a closure
 var numbers = [1, 2, 3]
-zip(numbers, numbers).filter { $0.2 > 1 }  // expected-error {{value of tuple type '(Int, Int)' has no member '2'}}
+zip(numbers, numbers).filter { $0.2 > 1 }  // expected-error {{value of tuple type '(Array<Int>.Element, Array<Int>.Element)' has no member '2'}}
 
 
 
@@ -456,7 +456,7 @@ extension Collection {
   }
 }
 func fn_r28909024(n: Int) {
-  return (0..<10).r28909024 { // expected-error {{unexpected non-void return value in void function}}
+  return (0..<10).r28909024 { // expected-error {{unexpected non-void return value in void function}} // expected-note {{did you mean to add a return type?}}
     _ in true
   }
 }
@@ -475,7 +475,8 @@ func g_2994(arg: Int) -> Double {
 C_2994<S_2994>(arg: { (r: S_2994) in f_2994(arg: g_2994(arg: r.dataOffset)) }) // expected-error {{cannot convert value of type 'Double' to expected argument type 'String'}}
 
 let _ = { $0[$1] }(1, 1) // expected-error {{value of type 'Int' has no subscripts}}
-let _ = { $0 = ($0 = {}) } // expected-error {{assigning a variable to itself}}
+// FIXME: Better diagnostic here would be `assigning a variable to itself` but binding ordering change exposed a but in diagnostics
+let _ = { $0 = ($0 = {}) } // expected-error {{function produces expected type '()'; did you mean to call it with '()'?}}
 let _ = { $0 = $0 = 42 } // expected-error {{assigning a variable to itself}}
 
 // https://bugs.swift.org/browse/SR-403
@@ -498,7 +499,7 @@ struct S_3520 {
 func sr3520_set_via_closure<S, T>(_ closure: (inout S, T) -> ()) {} // expected-note {{in call to function 'sr3520_set_via_closure'}}
 sr3520_set_via_closure({ $0.number1 = $1 })
 // expected-error@-1 {{generic parameter 'S' could not be inferred}}
-// expected-error@-2 {{generic parameter 'T' could not be inferred}}
+// expected-error@-2 {{unable to infer type of a closure parameter $1 in the current context}}
 
 // SR-3073: UnresolvedDotExpr in single expression closure
 
@@ -556,7 +557,6 @@ r32432145 { _,_ in
 // rdar://problem/30106822 - Swift ignores type error in closure and presents a bogus error about the caller
 [1, 2].first { $0.foo = 3 }
 // expected-error@-1 {{value of type 'Int' has no member 'foo'}}
-// expected-error@-2 {{cannot convert value of type '()' to closure result type 'Bool'}}
 
 // rdar://problem/32433193, SR-5030 - Higher-order function diagnostic mentions the wrong contextual type conversion problem
 protocol A_SR_5030 {
@@ -582,7 +582,7 @@ extension A_SR_5030 {
 }
 
 // rdar://problem/33296619
-let u = rdar33296619().element //expected-error {{use of unresolved identifier 'rdar33296619'}}
+let u = rdar33296619().element //expected-error {{cannot find 'rdar33296619' in scope}}
 
 [1].forEach { _ in
   _ = "\(u)"
@@ -608,7 +608,7 @@ _ = "".withCString { UnsafeMutableRawPointer(mutating: $0) }
 
 // rdar://problem/34077439 - Crash when pre-checking bails out and
 // leaves us with unfolded SequenceExprs inside closure body.
-_ = { (offset) -> T in // expected-error {{use of undeclared type 'T'}}
+_ = { (offset) -> T in // expected-error {{cannot find type 'T' in scope}}
   return offset ? 0 : 0
 }
 
@@ -787,7 +787,7 @@ func test() -> Int? {
 }
 
 var fn: () -> [Int] = {}
-// expected-error@-1 {{cannot convert value of type '()' to closure result type '[Int]'}}
+// expected-error@-1 {{cannot convert value of type '[Int]' to closure result type '()'}}
 
 fn = {}
 // expected-error@-1 {{cannot assign value of type '() -> ()' to type '() -> [Int]'}}
@@ -821,7 +821,7 @@ func rdar_40537960() {
   }
 
   var arr: [S] = []
-  _ = A(arr, fn: { L($0.v) }) // expected-error {{cannot convert value of type 'L' to closure result type 'R<P>'}}
+  _ = A(arr, fn: { L($0.v) })
   // expected-error@-1 {{generic parameter 'P' could not be inferred}}
   // expected-note@-2 {{explicitly specify the generic arguments to fix this issue}} {{8-8=<[S], <#P: P_40537960#>>}}
 }
@@ -908,11 +908,179 @@ do {
 // The funny error is because we infer the type of badResult as () -> ()
 // via the 'T -> U => T -> ()' implicit conversion.
 let badResult = { (fn: () -> ()) in fn }
-// expected-error@-1 {{expression resolves to an unused function}}
+// expected-error@-1 {{function is unused}}
 
 // rdar://problem/55102498 - closure's result type can't be inferred if the last parameter has a default value
 func test_trailing_closure_with_defaulted_last() {
   func foo<T>(fn: () -> T, value: Int = 0) {}
   foo { 42 } // Ok
   foo(fn: { 42 }) // Ok
+}
+
+// Test that even in multi-statement closure case we still pick up `(Action) -> Void` over `Optional<(Action) -> Void>`.
+// Such behavior used to rely on ranking of partial solutions but with delayed constraint generation of closure bodies
+// it's no longer the case, so we need to make sure that even in case of complete solutions we still pick the right type.
+
+protocol Action { }
+protocol StateType { }
+
+typealias Fn = (Action) -> Void
+typealias Middleware<State> = (@escaping Fn, @escaping () -> State?) -> (@escaping Fn) -> Fn
+
+class Foo<State: StateType> {
+  var state: State!
+  var fn: Fn!
+
+  init(middleware: [Middleware<State>]) {
+    self.fn = middleware
+               .reversed()
+               .reduce({ action in },
+                       { (fun, middleware) in // Ok, to type-check result type has to be `(Action) -> Void`
+                         let dispatch: (Action) -> Void = { _ in }
+                         let getState = { [weak self] in self?.state }
+                         return middleware(dispatch, getState)(fun)
+                       })
+  }
+}
+
+// Make sure that `String...` is translated into `[String]` in the body
+func test_explicit_variadic_is_interpreted_correctly() {
+  _ = { (T: String...) -> String in T[0] + "" } // Ok
+}
+
+// rdar://problem/59208419 - closure result type is incorrectly inferred to be a supertype
+func test_correct_inference_of_closure_result_in_presence_of_optionals() {
+  class A {}
+  class B : A {}
+
+  func foo(_: B) -> Int? { return 42 }
+
+  func bar<T: A>(_: (A) -> T?) -> T? {
+    return .none
+  }
+
+  guard let v = bar({ $0 as? B }),
+        let _ = foo(v) // Ok, v is inferred as `B`
+  else {
+    return;
+  }
+}
+
+
+// rdar://problem/59741308 - inference fails with tuple element has to joined to supertype
+func rdar_59741308() {
+  class Base {
+    func foo(_: Int) {}
+  }
+
+  class A : Base {}
+  class B : Base {}
+
+  func test() {
+    // Note that `0`, and `1` here are going to be type variables
+    // which makes join impossible until it's already to late for
+    // it to be useful.
+    [(A(), 0), (B(), 1)].forEach { base, value in
+      base.foo(value) // Ok
+    }
+  }
+}
+
+func r60074136() {
+  func takesClosure(_ closure: ((Int) -> Void) -> Void) {}
+
+  takesClosure { ((Int) -> Void) -> Void in // expected-warning {{unnamed parameters must be written with the empty name '_'}}
+  }
+}
+
+func rdar52204414() {
+  let _: () -> Void = { return 42 }
+  // expected-error@-1 {{cannot convert value of type 'Int' to closure result type 'Void'}}
+  let _ = { () -> Void in return 42 }
+  // expected-error@-1 {{declared closure result 'Int' is incompatible with contextual type 'Void'}}
+}
+
+// SR-12291 - trailing closure is used as an argument to the last (positionally) parameter.
+// Note that this was accepted prior to Swift 5.3. SE-0286 changed the
+// order of argument resolution and made it ambiguous.
+func overloaded_with_default(a: () -> Int, b: Int = 0, c: Int = 0) {} // expected-note{{found this candidate}}
+func overloaded_with_default(b: Int = 0, c: Int = 0, a: () -> Int) {} // expected-note{{found this candidate}}
+
+overloaded_with_default { 0 } // expected-error{{ambiguous use of 'overloaded_with_default'}}
+
+func overloaded_with_default_and_autoclosure<T>(_ a: @autoclosure () -> T, b: Int = 0) {}
+func overloaded_with_default_and_autoclosure<T>(b: Int = 0, c: @escaping () -> T?) {}
+
+overloaded_with_default_and_autoclosure { 42 } // Ok
+overloaded_with_default_and_autoclosure(42) // Ok
+
+// SR-12815 - `error: type of expression is ambiguous without more context` in many cases where methods are missing
+func sr12815() {
+  let _ = { a, b in }
+  // expected-error@-1 {{unable to infer type of a closure parameter 'a' in the current context}}
+  // expected-error@-2 {{unable to infer type of a closure parameter 'b' in the current context}}
+
+  _ = .a { b in } // expected-error {{cannot infer contextual base in reference to member 'a'}}
+
+  struct S {}
+
+  func test(s: S) {
+    S.doesntExist { b in } // expected-error {{type 'S' has no member 'doesntExist'}}
+    s.doesntExist { b in } // expected-error {{value of type 'S' has no member 'doesntExist'}}
+    s.doesntExist1 { v in } // expected-error {{value of type 'S' has no member 'doesntExist1'}}
+     .doesntExist2() { $0 }
+  }
+}
+
+// Make sure we can infer generic arguments in an explicit result type.
+let explicitUnboundResult1 = { () -> Array in [0] }
+let explicitUnboundResult2: (Array<Bool>) -> Array<Int> = {
+  (arr: Array) -> Array in [0]
+}
+// FIXME: Should we prioritize the contextual result type and infer Array<Int>
+// rather than using a type variable in these cases?
+// expected-error@+1 {{unable to infer closure type in the current context}}
+let explicitUnboundResult3: (Array<Bool>) -> Array<Int> = {
+  (arr: Array) -> Array in [true]
+}
+
+// rdar://problem/71525503 - Assertion failed: (!shouldHaveDirectCalleeOverload(call) && "Should we have resolved a callee for this?")
+func test_inout_with_invalid_member_ref() {
+  struct S {
+    static func createS(_ arg: inout Int) -> S { S() }
+  }
+  class C {
+    static subscript(s: (Int) -> Void) -> Bool { get { return false } }
+  }
+
+  let _: Bool = C[{ .createS(&$0) }]
+  // expected-error@-1 {{value of tuple type 'Void' has no member 'createS'}}
+  // expected-error@-2 {{cannot pass immutable value as inout argument: '$0' is immutable}}
+}
+
+// rdar://problem/74435602 - failure to infer a type for @autoclosure parameter.
+func rdar_74435602(error: Error?) {
+  func accepts_autoclosure<T>(_ expression: @autoclosure () throws -> T) {}
+
+  accepts_autoclosure({
+    if let failure = error {
+      throw failure
+    }
+  })
+}
+
+// SR-14280
+let _: (@convention(block) () -> Void)? = Bool.random() ? nil : {} // OK
+let _: (@convention(thin) () -> Void)? = Bool.random() ? nil : {} // OK
+let _: (@convention(c) () -> Void)? = Bool.random() ? nil : {} // OK on type checking, diagnostics are deffered to SIL
+
+let _: (@convention(block) () -> Void)? = Bool.random() ? {} : {} // OK
+let _: (@convention(thin) () -> Void)? = Bool.random() ? {} : {} // OK
+let _: (@convention(c) () -> Void)? = Bool.random() ? {} : {} // OK on type checking, diagnostics are deffered to SIL
+
+// Make sure that diagnostic is attached to the closure even when body is empty (implicitly returns `Void`)
+var emptyBodyMismatch: () -> Int {
+  return { // expected-error {{cannot convert value of type '()' to closure result type 'Int'}}
+    return
+  }
 }

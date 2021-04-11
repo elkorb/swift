@@ -1,11 +1,9 @@
 // RUN: %empty-directory(%t)
-// RUN: %target-swift-frontend -enable-experimental-differentiable-programming %s -emit-module -parse-as-library -o %t
+// RUN: %target-swift-frontend %s -emit-module -parse-as-library -o %t
 // RUN: llvm-bcanalyzer %t/derivative_attr.swiftmodule | %FileCheck %s -check-prefix=BCANALYZER
-// RUN: %target-sil-opt -enable-experimental-differentiable-programming -disable-sil-linking -enable-sil-verify-all %t/derivative_attr.swiftmodule -o - | %FileCheck %s
+// RUN: %target-sil-opt -enable-sil-verify-all %t/derivative_attr.swiftmodule -o - | %FileCheck %s
 
 // BCANALYZER-NOT: UnknownCode
-
-// REQUIRES: differentiable_programming
 
 import _Differentiation
 
@@ -58,8 +56,11 @@ extension S {
     (self, { $0 })
   }
 
+  // Note: qualified name base types are not yet serialized and are not printed
+  // when round-tripping.
+
   // CHECK: @derivative(of: instanceMethod, wrt: (self, x))
-  @derivative(of: instanceMethod, wrt: (self, x))
+  @derivative(of: S.instanceMethod, wrt: (self, x))
   func derivativeInstanceMethodWrtAll(_ x: S) -> (value: S, differential: (S, S) -> S) {
     (self, { (dself, dx) in self })
   }
@@ -83,7 +84,8 @@ extension S {
 
 extension S {
   var computedProperty: S {
-    self
+    get { self }
+    set {}
   }
 
   // CHECK: @derivative(of: computedProperty, wrt: self)
@@ -91,11 +93,30 @@ extension S {
   func derivativeProperty() -> (value: S, differential: (S) -> S) {
     (self, { $0 })
   }
+
+  // CHECK: @derivative(of: computedProperty.get, wrt: self)
+  @derivative(of: computedProperty.get, wrt: self)
+  func derivativePropertyGetter() -> (value: S, pullback: (S) -> S) {
+    fatalError()
+  }
+
+  // CHECK: @derivative(of: computedProperty.set, wrt: (self, newValue))
+  @derivative(of: computedProperty.set, wrt: (self, newValue))
+  mutating func derivativePropertySetter(_ newValue: S) -> (
+    value: (), pullback: (inout S) -> S
+  ) {
+    fatalError()
+  }
 }
 
 // Test subscripts.
 
 extension S {
+  subscript() -> S {
+    get { self }
+    set {}
+  }
+
   subscript<T: Differentiable>(x: T) -> S {
     self
   }
@@ -104,5 +125,19 @@ extension S {
   @derivative(of: subscript(_:), wrt: self)
   func derivativeSubscript<T: Differentiable>(x: T) -> (value: S, differential: (S) -> S) {
     (self, { $0 })
+  }
+
+  // CHECK: @derivative(of: subscript.get, wrt: self)
+  @derivative(of: subscript.get, wrt: self)
+  func derivativeSubscriptGetter() -> (value: S, pullback: (S) -> S) {
+    fatalError()
+  }
+
+  // CHECK: @derivative(of: subscript.set, wrt: (self, newValue))
+  @derivative(of: subscript.set, wrt: (self, newValue))
+  mutating func derivativeSubscriptSetter(_ newValue: S) -> (
+    value: (), pullback: (inout S) -> S
+  ) {
+    fatalError()
   }
 }

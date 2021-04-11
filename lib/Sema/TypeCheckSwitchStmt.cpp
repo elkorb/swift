@@ -131,7 +131,7 @@ namespace {
         case SpaceKind::UnknownCase:
           return isAllowedButNotRequired() ? 0 : 1;
         case SpaceKind::Type: {
-          if (!canDecompose(getType(), DC)) {
+          if (!canDecompose(getType())) {
             return 1;
           }
           cache.insert(getType().getPointer());
@@ -210,12 +210,6 @@ namespace {
           // be used.
           return Space();
         }
-        return Space(T, H, SP);
-      }
-      static Space forConstructor(Type T, DeclName H,
-                                  std::forward_list<Space> SP) {
-        // No need to filter SP here; this is only used to copy other
-        // Constructor spaces.
         return Space(T, H, SP);
       }
       static Space forBool(bool C) {
@@ -322,14 +316,14 @@ namespace {
           }
 
           // (_ : Ty1) <= (_ : Ty2) iff D(Ty1) == D(Ty2)
-          if (canDecompose(this->getType(), DC)) {
+          if (canDecompose(this->getType())) {
             Space or1Space = decompose(DC, this->getType());
             if (or1Space.isSubspace(other, DC)) {
               return true;
             }
           }
 
-          if (canDecompose(other.getType(), DC)) {
+          if (canDecompose(other.getType())) {
             Space or2Space = decompose(DC, other.getType());
             return this->isSubspace(or2Space, DC);
           }
@@ -345,7 +339,7 @@ namespace {
           }
 
           // (_ : Ty1) <= (S1 | ... | Sn) iff D(Ty1) <= (S1 | ... | Sn)
-          if (!canDecompose(this->getType(), DC)) {
+          if (!canDecompose(this->getType())) {
             return false;
           }
           Space or1Space = decompose(DC, this->getType());
@@ -353,7 +347,7 @@ namespace {
         }
         PAIRCASE (SpaceKind::Type, SpaceKind::Constructor): {
           // (_ : Ty1) <= H(p1 | ... | pn) iff D(Ty1) <= H(p1 | ... | pn)
-          if (canDecompose(this->getType(), DC)) {
+          if (canDecompose(this->getType())) {
             Space or1Space = decompose(DC, this->getType());
             return or1Space.isSubspace(other, DC);
           }
@@ -418,6 +412,7 @@ namespace {
         PAIRCASE (SpaceKind::BooleanConstant, SpaceKind::BooleanConstant):
           return this->getBoolValue() == other.getBoolValue();
 
+        PAIRCASE (SpaceKind::BooleanConstant, SpaceKind::Constructor):
         PAIRCASE (SpaceKind::BooleanConstant, SpaceKind::UnknownCase):
           return false;
 
@@ -470,7 +465,7 @@ namespace {
           return *this;
         }
         PAIRCASE (SpaceKind::Type, SpaceKind::Constructor): {
-          if (canDecompose(this->getType(), DC)) {
+          if (canDecompose(this->getType())) {
             auto decomposition = decompose(DC, this->getType());
             return decomposition.minus(other, DC, minusCount);
           } else {
@@ -632,7 +627,7 @@ namespace {
             return (getKind() == SpaceKind::BooleanConstant)  ? Space() : *this;
           }
 
-          if (canDecompose(other.getType(), DC)) {
+          if (canDecompose(other.getType())) {
             auto decomposition = decompose(DC, other.getType());
             return this->minus(decomposition, DC, minusCount);
           }
@@ -644,7 +639,7 @@ namespace {
           return *this;
 
         PAIRCASE (SpaceKind::Type, SpaceKind::BooleanConstant): {
-          if (canDecompose(this->getType(), DC)) {
+          if (canDecompose(this->getType())) {
             auto orSpace = decompose(DC, this->getType());
             return orSpace.minus(other, DC, minusCount);
           } else {
@@ -686,7 +681,7 @@ namespace {
             llvm_unreachable("Attempted to display disjunct to user!");
           } else {
             buffer << "DISJOIN(";
-            interleave(Spaces, [&](const Space &sp) {
+            llvm::interleave(Spaces, [&](const Space &sp) {
               sp.show(buffer, forDisplay);
             }, [&buffer]() { buffer << " |\n"; });
             buffer << ")";
@@ -716,7 +711,7 @@ namespace {
             if (args != argEnd) {
               labelSpaces.push_back(
                   std::pair<Identifier, Space>(*args, param));
-              args++;
+              ++args;
             } else
               labelSpaces.push_back(
                   std::pair<Identifier, Space>(Identifier(), param));
@@ -786,7 +781,7 @@ namespace {
       // Decompose a type into its component spaces.
       static void decompose(const DeclContext *DC, Type tp,
                             SmallVectorImpl<Space> &arr) {
-        assert(canDecompose(tp, DC) && "Non-decomposable type?");
+        assert(canDecompose(tp) && "Non-decomposable type?");
 
         if (tp->isBool()) {
           arr.push_back(Space::forBool(true));
@@ -794,31 +789,32 @@ namespace {
         } else if (auto *E = tp->getEnumOrBoundGenericEnum()) {
           // Look into each case of the enum and decompose it in turn.
           auto children = E->getAllElements();
-          std::transform(children.begin(), children.end(),
-                         std::back_inserter(arr), [&](EnumElementDecl *eed) {
-            // Don't force people to match unavailable cases; they can't even
-            // write them.
-            if (AvailableAttr::isUnavailable(eed)) {
-              return Space();
-            }
+          llvm::transform(
+              children, std::back_inserter(arr), [&](EnumElementDecl *eed) {
+                // Don't force people to match unavailable cases; they can't
+                // even write them.
+                if (AvailableAttr::isUnavailable(eed)) {
+                  return Space();
+                }
 
-            // .e(a: X, b: X)   -> (a: X, b: X)
-            // .f((a: X, b: X)) -> ((a: X, b: X)
-            auto eedTy = tp->getCanonicalType()
-                           ->getTypeOfMember(E->getModuleContext(), eed,
-                                             eed->getArgumentInterfaceType());
-            SmallVector<Space, 4> constElemSpaces;
-            if (eedTy) {
-              if (auto *TTy = eedTy->getAs<TupleType>()) {
-                Space::getTupleTypeSpaces(eedTy, TTy, constElemSpaces);
-              } else if (auto *TTy = dyn_cast<ParenType>(eedTy.getPointer())) {
-                constElemSpaces.push_back(
-                    Space::forType(TTy->getUnderlyingType(), Identifier()));
-              }
-            }
-            return Space::forConstructor(tp, eed->getFullName(),
-                                         constElemSpaces);
-          });
+                // .e(a: X, b: X)   -> (a: X, b: X)
+                // .f((a: X, b: X)) -> ((a: X, b: X)
+                auto eedTy = tp->getCanonicalType()->getTypeOfMember(
+                    E->getModuleContext(), eed,
+                    eed->getArgumentInterfaceType());
+                SmallVector<Space, 4> constElemSpaces;
+                if (eedTy) {
+                  if (auto *TTy = eedTy->getAs<TupleType>()) {
+                    Space::getTupleTypeSpaces(eedTy, TTy, constElemSpaces);
+                  } else if (auto *TTy =
+                                 dyn_cast<ParenType>(eedTy.getPointer())) {
+                    constElemSpaces.push_back(
+                        Space::forType(TTy->getUnderlyingType(), Identifier()));
+                  }
+                }
+                return Space::forConstructor(tp, eed->getName(),
+                                             constElemSpaces);
+              });
 
           if (!E->isFormallyExhaustive(DC)) {
             arr.push_back(Space::forUnknown(/*allowedButNotRequired*/false));
@@ -848,7 +844,7 @@ namespace {
         return Space::forDisjunct(spaces);
       }
 
-      static bool canDecompose(Type tp, const DeclContext *DC) {
+      static bool canDecompose(Type tp) {
         return tp->is<TupleType>() || tp->isBool() ||
                tp->getEnumOrBoundGenericEnum();
       }
@@ -1036,7 +1032,7 @@ namespace {
       // decompose the type space and offer them as fixits, or simply offer
       // to insert a `default` clause.
       if (uncovered.getKind() == SpaceKind::Type) {
-        if (Space::canDecompose(uncovered.getType(), DC)) {
+        if (Space::canDecompose(uncovered.getType())) {
           SmallVector<Space, 4> spaces;
           Space::decompose(DC, uncovered.getType(), spaces);
           diagnoseMissingCases(RequiresDefault::No, Space::forDisjunct(spaces),
@@ -1342,7 +1338,7 @@ namespace {
 
             for (size_t rowIdx = 0, colIdx = 0; rowIdx < matrix.size(); ++rowIdx) {
               if (rowIdx != 0 && (rowIdx % stride) == 0) {
-                colIdx++;
+                ++colIdx;
               }
 
               matrix[rowIdx].push_back(columnVect[colIdx]);
@@ -1422,8 +1418,8 @@ namespace {
         llvm_unreachable("cannot appear in case patterns");
       case PatternKind::Expr:
         return Space();
-      case PatternKind::Var: {
-        auto *VP = cast<VarPattern>(item);
+      case PatternKind::Binding: {
+        auto *VP = cast<BindingPattern>(item);
         return projectPattern(VP->getSubPattern());
       }
       case PatternKind::Paren: {
@@ -1433,7 +1429,7 @@ namespace {
       case PatternKind::OptionalSome: {
         auto *OSP = cast<OptionalSomePattern>(item);
         auto &Ctx = OSP->getElementDecl()->getASTContext();
-        Identifier name = Ctx.getOptionalSomeDecl()->getName();
+        const Identifier name = Ctx.getOptionalSomeDecl()->getBaseIdentifier();
 
         auto subSpace = projectPattern(OSP->getSubPattern());
         // To match patterns like (_, _, ...)?, we must rewrite the underlying
@@ -1441,7 +1437,7 @@ namespace {
         if (subSpace.getKind() == SpaceKind::Constructor &&
             subSpace.getHead().getBaseIdentifier().empty()) {
           return Space::forConstructor(item->getType(), name,
-                                       std::move(subSpace.getSpaces()));
+                                       {subSpace});
         }
         return Space::forConstructor(item->getType(), name, subSpace);
       }
@@ -1460,11 +1456,10 @@ namespace {
         switch (SP->getKind()) {
         case PatternKind::Tuple: {
           auto *TP = dyn_cast<TuplePattern>(SP);
-          std::transform(TP->getElements().begin(), TP->getElements().end(),
-                         std::back_inserter(conArgSpace),
-                         [&](TuplePatternElt pate) {
-                           return projectPattern(pate.getPattern());
-                         });
+          llvm::transform(TP->getElements(), std::back_inserter(conArgSpace),
+                          [&](TuplePatternElt pate) {
+                            return projectPattern(pate.getPattern());
+                          });
           // FIXME: Compound names.
           return Space::forConstructor(item->getType(),
                                        VP->getName().getBaseIdentifier(),
@@ -1513,11 +1508,10 @@ namespace {
       case PatternKind::Tuple: {
         auto *TP = cast<TuplePattern>(item);
         SmallVector<Space, 4> conArgSpace;
-        std::transform(TP->getElements().begin(), TP->getElements().end(),
-                       std::back_inserter(conArgSpace),
-                       [&](TuplePatternElt pate) {
-          return projectPattern(pate.getPattern());
-        });
+        llvm::transform(TP->getElements(), std::back_inserter(conArgSpace),
+                        [&](TuplePatternElt pate) {
+                          return projectPattern(pate.getPattern());
+                        });
         return Space::forConstructor(item->getType(), Identifier(),
                                      conArgSpace);
       }

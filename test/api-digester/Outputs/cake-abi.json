@@ -147,6 +147,12 @@
         },
         {
           "kind": "Conformance",
+          "name": "Sendable",
+          "printedName": "Sendable",
+          "usr": "s:s8SendableP"
+        },
+        {
+          "kind": "Conformance",
           "name": "P2",
           "printedName": "P2",
           "usr": "s:4cake2P2P"
@@ -199,7 +205,8 @@
       "usr": "s:4cake2C0C",
       "moduleName": "cake",
       "genericSig": "<τ_0_0, τ_0_1, τ_0_2>",
-      "sugared_genericSig": "<T1, T2, T3>"
+      "sugared_genericSig": "<T1, T2, T3>",
+      "hasMissingDesignatedInitializers": true
     },
     {
       "kind": "TypeDecl",
@@ -428,6 +435,8 @@
       "usr": "s:4cake2C1C",
       "moduleName": "cake",
       "superclassUsr": "s:4cake2C0C",
+      "hasMissingDesignatedInitializers": true,
+      "inheritsConvenienceInitializers": true,
       "superclassNames": [
         "cake.C0<cake.S1, cake.S1, cake.S1>"
       ]
@@ -612,6 +621,7 @@
       "usr": "s:4cake6NumberO",
       "moduleName": "cake",
       "enumRawTypeName": "Int",
+      "isEnumExhaustive": true,
       "conformances": [
         {
           "kind": "Conformance",
@@ -879,6 +889,14 @@
       "moduleName": "cake",
       "declAttributes": [
         "Frozen"
+      ],
+      "conformances": [
+        {
+          "kind": "Conformance",
+          "name": "Sendable",
+          "printedName": "Sendable",
+          "usr": "s:s8SendableP"
+        }
       ]
     },
     {
@@ -1330,7 +1348,8 @@
       "declAttributes": [
         "FixedLayout",
         "UsableFromInline"
-      ]
+      ],
+      "hasMissingDesignatedInitializers": true
     },
     {
       "kind": "TypeDecl",
@@ -1387,6 +1406,7 @@
       "declKind": "Class",
       "usr": "s:4cake15FutureContainerC",
       "moduleName": "cake",
+      "hasMissingDesignatedInitializers": true,
       "conformances": [
         {
           "kind": "Conformance",
@@ -1418,7 +1438,8 @@
         "Available",
         "Available",
         "Available"
-      ]
+      ],
+      "hasMissingDesignatedInitializers": true
     },
     {
       "kind": "TypeDecl",
@@ -1430,7 +1451,8 @@
       "intro_swift": "5",
       "declAttributes": [
         "Available"
-      ]
+      ],
+      "hasMissingDesignatedInitializers": true
     },
     {
       "kind": "TypeDecl",
@@ -1482,7 +1504,8 @@
       "objc_name": "NewObjCClass",
       "declAttributes": [
         "ObjC"
-      ]
+      ],
+      "hasMissingDesignatedInitializers": true
     },
     {
       "kind": "TypeDecl",
@@ -1721,6 +1744,12 @@
           "name": "_HasCustomAnyHashableRepresentation",
           "printedName": "_HasCustomAnyHashableRepresentation",
           "usr": "s:s35_HasCustomAnyHashableRepresentationP"
+        },
+        {
+          "kind": "Conformance",
+          "name": "Sendable",
+          "printedName": "Sendable",
+          "usr": "s:s8SendableP"
         },
         {
           "kind": "Conformance",

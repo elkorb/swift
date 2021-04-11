@@ -24,19 +24,20 @@
 #include "swift/Runtime/Config.h"
 
 #if SWIFT_OBJC_INTEROP
+#include "ErrorObject.h"
+#include "Private.h"
+#include "SwiftObject.h"
+#include "swift/Basic/Lazy.h"
+#include "swift/Demangling/ManglingMacros.h"
 #include "swift/Runtime/Casting.h"
 #include "swift/Runtime/Debug.h"
 #include "swift/Runtime/ObjCBridge.h"
-#include "swift/Basic/Lazy.h"
-#include "swift/Demangling/ManglingMacros.h"
-#include "ErrorObject.h"
-#include "Private.h"
+#include <Foundation/Foundation.h>
 #include <dlfcn.h>
 #include <objc/NSObject.h>
-#include <objc/runtime.h>
 #include <objc/message.h>
 #include <objc/objc.h>
-#include <Foundation/Foundation.h>
+#include <objc/runtime.h>
 
 using namespace swift;
 using namespace swift::hashable_support;
@@ -97,6 +98,18 @@ using namespace swift::hashable_support;
          && "Error box used as NSError before initialization");
   // Don't need to .retain.autorelease since it's immutable.
   return cf_const_cast<id>(domain);
+}
+
+- (id /* NSString */)description {
+  auto error = (const SwiftError *)self;
+  auto value = error->getValue();
+
+  // Copy the value, since it will be consumed by getDescription.
+  ValueBuffer copyBuf;
+  auto copy = error->type->allocateBufferIn(&copyBuf);
+  error->type->vw_initializeWithCopy(copy, const_cast<OpaqueValue *>(value));
+
+  return getDescription(copy, error->type);
 }
 
 - (NSInteger)code {
@@ -529,6 +542,26 @@ swift::_swift_stdlib_bridgeErrorToNSError(SwiftError *errorObject) {
 
 extern "C" const ProtocolDescriptor PROTOCOL_DESCR_SYM(s5Error);
 
+static IMP
+getNSProxyLookupMethod() {
+  Class NSProxyClass = objc_lookUpClass("NSProxy");
+  return class_getMethodImplementation(NSProxyClass, @selector(methodSignatureForSelector:));
+}
+
+// A safer alternative to calling `isKindOfClass:` directly.
+static bool
+isKindOfClass(HeapObject *object, Class cls) {
+  IMP NSProxyLookupMethod = SWIFT_LAZY_CONSTANT(getNSProxyLookupMethod());
+  // People sometimes fail to override `methodSignatureForSelector:` in their
+  // NSProxy subclasses, which causes `isKindOfClass:` to crash.  Avoid that...
+  Class objectClass = object_getClass((id)object);
+  IMP objectLookupMethod = class_getMethodImplementation(objectClass, @selector(methodSignatureForSelector:));
+  if (objectLookupMethod == NSProxyLookupMethod) {
+    return false;
+  }
+  return [reinterpret_cast<id>(object) isKindOfClass: cls];
+}
+
 bool
 swift::tryDynamicCastNSErrorObjectToValue(HeapObject *object,
                                           OpaqueValue *dest,
@@ -537,8 +570,7 @@ swift::tryDynamicCastNSErrorObjectToValue(HeapObject *object,
   Class NSErrorClass = getNSErrorClass();
 
   // The object must be an NSError subclass.
-  if (isObjCTaggedPointerOrNull(object) ||
-      ![reinterpret_cast<id>(object) isKindOfClass: NSErrorClass])
+  if (isObjCTaggedPointerOrNull(object) || !isKindOfClass(object, NSErrorClass))
     return false;
 
   id srcInstance = reinterpret_cast<id>(object);

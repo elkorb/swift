@@ -18,8 +18,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "swift/AST/DiagnosticsFrontend.h"
+#include "swift/AST/IRGenRequests.h"
 #include "swift/AST/SILOptions.h"
-#include "swift/Basic/LLVMContext.h"
 #include "swift/Basic/LLVMInitialize.h"
 #include "swift/Frontend/DiagnosticVerifier.h"
 #include "swift/Frontend/Frontend.h"
@@ -88,17 +88,17 @@ static llvm::cl::opt<std::string>
 static llvm::cl::opt<bool>
     PerformWMO("wmo", llvm::cl::desc("Enable whole-module optimizations"));
 
-static llvm::cl::opt<IRGenOutputKind>
-    OutputKind("output-kind", llvm::cl::desc("Type of output to produce"),
-               llvm::cl::values(clEnumValN(IRGenOutputKind::LLVMAssembly,
-                                           "llvm-as", "Emit llvm assembly"),
-                                clEnumValN(IRGenOutputKind::LLVMBitcode,
-                                           "llvm-bc", "Emit llvm bitcode"),
-                                clEnumValN(IRGenOutputKind::NativeAssembly,
-                                           "as", "Emit native assembly"),
-                                clEnumValN(IRGenOutputKind::ObjectFile,
-                                           "object", "Emit an object file")),
-               llvm::cl::init(IRGenOutputKind::ObjectFile));
+static llvm::cl::opt<IRGenOutputKind> OutputKind(
+    "output-kind", llvm::cl::desc("Type of output to produce"),
+    llvm::cl::values(clEnumValN(IRGenOutputKind::LLVMAssemblyAfterOptimization,
+                                "llvm-as", "Emit llvm assembly"),
+                     clEnumValN(IRGenOutputKind::LLVMBitcode, "llvm-bc",
+                                "Emit llvm bitcode"),
+                     clEnumValN(IRGenOutputKind::NativeAssembly, "as",
+                                "Emit native assembly"),
+                     clEnumValN(IRGenOutputKind::ObjectFile, "object",
+                                "Emit an object file")),
+    llvm::cl::init(IRGenOutputKind::ObjectFile));
 
 static llvm::cl::opt<bool>
     DisableLegacyTypeInfo("disable-legacy-type-info",
@@ -178,32 +178,42 @@ int main(int argc, char **argv) {
   if (CI.setup(Invocation))
     return 1;
 
-  CI.performSema();
-
-  // If parsing produced an error, don't run any passes.
-  if (CI.getASTContext().hadError())
+  std::error_code EC;
+  llvm::raw_fd_ostream outStream(OutputFilename, EC, llvm::sys::fs::F_None);
+  if (outStream.has_error() || EC) {
+    CI.getDiags().diagnose(SourceLoc(), diag::error_opening_output,
+                           OutputFilename, EC.message());
+    outStream.clear_error();
     return 1;
-
-  // Load the SIL if we have a module. We have to do this after SILParse
-  // creating the unfortunate double if statement.
-  if (Invocation.hasSerializedAST()) {
-    assert(!CI.hasSILModule() &&
-           "performSema() should not create a SILModule.");
-    CI.createSILModule();
-    std::unique_ptr<SerializedSILLoader> SL = SerializedSILLoader::create(
-        CI.getASTContext(), CI.getSILModule(), nullptr);
-
-    if (extendedInfo.isSIB())
-      SL->getAllForModule(CI.getMainModule()->getName(), nullptr);
-    else
-      SL->getAll();
   }
 
+  auto *mod = CI.getMainModule();
+  assert(mod->getFiles().size() == 1);
+
+  const auto &TBDOpts = Invocation.getTBDGenOptions();
+  const auto &SILOpts = Invocation.getSILOptions();
+  auto &SILTypes = CI.getSILTypes();
+  auto moduleName = CI.getMainModule()->getName().str();
   const PrimarySpecificPaths PSPs(OutputFilename, InputFilename);
-  std::unique_ptr<llvm::Module> Mod =
-      performIRGeneration(Opts, CI.getMainModule(), CI.takeSILModule(),
-                          CI.getMainModule()->getName().str(),
-                          PSPs,
-                          getGlobalLLVMContext(), ArrayRef<std::string>());
-  return CI.getASTContext().hadError();
+
+  auto getDescriptor = [&]() -> IRGenDescriptor {
+    if (PerformWMO) {
+      return IRGenDescriptor::forWholeModule(
+          mod, Opts, TBDOpts, SILOpts, SILTypes,
+          /*SILMod*/ nullptr, moduleName, PSPs);
+    } else {
+      return IRGenDescriptor::forFile(mod->getFiles()[0], Opts, TBDOpts,
+                                      SILOpts, SILTypes, /*SILMod*/ nullptr,
+                                      moduleName, PSPs, /*discriminator*/ "");
+    }
+  };
+
+  auto &eval = CI.getASTContext().evaluator;
+  auto generatedMod = llvm::cantFail(eval(OptimizedIRRequest{getDescriptor()}));
+  if (!generatedMod)
+    return 1;
+
+  return compileAndWriteLLVM(generatedMod.getModule(),
+                             generatedMod.getTargetMachine(), Opts,
+                             CI.getStatsReporter(), CI.getDiags(), outStream);
 }

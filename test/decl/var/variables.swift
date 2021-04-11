@@ -14,24 +14,37 @@ var bfx : Int, bfy : Int
 
 _ = 10
 
-var self1 = self1 // expected-error {{variable used within its own initial value}}
-var self2 : Int = self2 // expected-error {{variable used within its own initial value}}
-var (self3) : Int = self3 // expected-error {{variable used within its own initial value}}
-var (self4) : Int = self4 // expected-error {{variable used within its own initial value}}
-var self5 = self5 + self5 // expected-error 2 {{variable used within its own initial value}}
-var self6 = !self6 // expected-error {{variable used within its own initial value}}
-var (self7a, self7b) = (self7b, self7a) // expected-error 2 {{variable used within its own initial value}}
+var self1 = self1
+// expected-note@-1 2{{through reference here}}
+// expected-error@-2 {{circular reference}}
+
+var self2 : Int = self2
+var (self3) : Int = self3
+var (self4) : Int = self4
+
+var self5 = self5 + self5
+// expected-note@-1 2{{through reference here}}
+// expected-error@-2 {{circular reference}}
+
+var self6 = !self6
+// expected-note@-1 2{{through reference here}}
+// expected-error@-2 {{circular reference}}
+
+var (self7a, self7b) = (self7b, self7a)
+// expected-note@-1 2{{through reference here}}
+// expected-error@-2 {{circular reference}}
 
 var self8 = 0
 func testShadowing() {
-  var self8 = self8 // expected-error {{variable used within its own initial value}}
+  var self8 = self8
+  // expected-warning@-1 {{initialization of variable 'self8' was never used; consider replacing with assignment to '_' or removing it}}
 }
 
 var (paren) = 0
 var paren2: Int = paren
 
 struct Broken {
-  var b : Bool = True // expected-error{{use of unresolved identifier 'True'}}
+  var b : Bool = True // expected-error{{cannot find 'True' in scope}}
 }
 
 // rdar://16252090 - Warning when inferring empty tuple type for declarations
@@ -96,7 +109,7 @@ func tuplePatternDestructuring(_ x : Int, y : Int) {
   _ = i+j
 
   // <rdar://problem/20395243> QoI: type variable reconstruction failing for tuple types
-  let (x: g1, a: h1) = (b: x, a: y)  // expected-error {{tuple type '(b: Int, a: Int)' is not convertible to tuple type '(x: Int, a: Int)'}}
+  let (x: g1, a: h1) = (b: x, a: y)  // expected-error {{cannot convert value of type '(b: Int, a: Int)' to specified type '(x: Int, a: Int)'}}
 }
 
 // <rdar://problem/21057425> Crash while compiling attached test-app.
@@ -118,4 +131,8 @@ if true {
   _ = s
 }
 
-
+// ASTScope assertion
+func patternBindingWithTwoEntries() {
+  let x2 = 1, (_, _) = (1, 2)
+  // expected-warning@-1 {{immutable value 'x2' was never used; consider replacing with '_' or removing it}}
+}

@@ -27,7 +27,7 @@
 ///                                           "Evelyn Ashford": 10.79,
 ///                                           "Marlies Gohr": 10.81]
 ///     print(recordTimes.first!)
-///     // Prints "("Florence Griffith-Joyner", 10.49)"
+///     // Prints "(key: "Florence Griffith-Joyner", value: 10.49)"
 ///
 /// Some operations that are efficient on a dictionary are slower when using
 /// `KeyValuePairs`. In particular, to find the value matching a key, you
@@ -139,3 +139,7 @@ extension KeyValuePairs: CustomDebugStringConvertible {
     return _makeKeyValuePairDescription()
   }
 }
+
+// TODO: Remove UnsafeSendable when we have tuples conforming
+extension KeyValuePairs: Sendable, UnsafeSendable
+    where Key: Sendable, Value: Sendable { }

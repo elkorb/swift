@@ -22,19 +22,19 @@ func getSingleSourceLibraries(subDirectory: String) -> [String] {
   let fileURLs = try! f.contentsOfDirectory(at: dirURL,
                                             includingPropertiesForKeys: nil)
   return fileURLs.compactMap { (path: URL) -> String? in
-    let c = path.lastPathComponent.split(separator: ".")
-    // Too many components. Must be a gyb file.
-    if c.count > 2 {
+    guard let lastDot = path.lastPathComponent.lastIndex(of: ".") else {
       return nil
     }
-    if c[1] != "swift" {
-      return nil
-    }
+    let ext = String(path.lastPathComponent.suffix(from: lastDot))
+    guard ext == ".swift" else { return nil }
 
-    let name = String(c[0])
+    let name = String(path.lastPathComponent.prefix(upTo: lastDot))
 
-    // We do not support this test.
+    // Test names must have a single component.
+    if name.contains(".") { return nil }
+
     if unsupportedTests.contains(name) {
+      // We do not support this test.
       return nil
     }
 
@@ -46,6 +46,11 @@ var singleSourceLibraryDirs: [String] = []
 singleSourceLibraryDirs.append("single-source")
 
 var singleSourceLibraries: [String] = singleSourceLibraryDirs.flatMap {
+  getSingleSourceLibraries(subDirectory: $0)
+}
+
+var cxxSingleSourceLibraryDirs: [String] = ["cxx-source"]
+var cxxSingleSourceLibraries: [String] = cxxSingleSourceLibraryDirs.flatMap {
   getSingleSourceLibraries(subDirectory: $0)
 }
 
@@ -80,6 +85,7 @@ products.append(.library(name: "ObjectiveCTests", type: .static, targets: ["Obje
 products.append(.executable(name: "SwiftBench", targets: ["SwiftBench"]))
 
 products += singleSourceLibraries.map { .library(name: $0, type: .static, targets: [$0]) }
+products += cxxSingleSourceLibraries.map { .library(name: $0, type: .static, targets: [$0]) }
 products += multiSourceLibraries.map {
   return .library(name: $0.name, type: .static, targets: [$0.name])
 }
@@ -103,13 +109,18 @@ swiftBenchDeps.append(.target(name: "ObjectiveCTests"))
 #endif
 swiftBenchDeps.append(.target(name: "DriverUtils"))
 swiftBenchDeps += singleSourceLibraries.map { .target(name: $0) }
+swiftBenchDeps += cxxSingleSourceLibraries.map { .target(name: $0) }
 swiftBenchDeps += multiSourceLibraries.map { .target(name: $0.name) }
 
 targets.append(
     .target(name: "SwiftBench",
     dependencies: swiftBenchDeps,
     path: "utils",
-    sources: ["main.swift"]))
+    sources: ["main.swift"],
+    swiftSettings: [.unsafeFlags(["-Xfrontend",
+                                  "-enable-cxx-interop",
+                                  "-I",
+                                  "utils/CxxTests"])]))
 
 #if os(macOS) || os(iOS) || os(watchOS) || os(tvOS)
 targets.append(
@@ -137,6 +148,18 @@ targets += singleSourceLibraries.map { name in
       dependencies: singleSourceDeps,
       path: "single-source",
       sources: ["\(name).swift"])
+}
+
+targets += cxxSingleSourceLibraries.map { name in
+  return .target(
+    name: name,
+    dependencies: singleSourceDeps,
+    path: "cxx-source",
+    sources: ["\(name).swift"],
+    swiftSettings: [.unsafeFlags(["-Xfrontend",
+                                  "-enable-cxx-interop",
+                                  "-I",
+                                  "utils/CxxTests"])])
 }
 
 targets += multiSourceLibraries.map { lib in

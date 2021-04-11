@@ -25,7 +25,6 @@
 #include "swift/Basic/Sanitizers.h"
 #include "swift/Driver/Util.h"
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
 
 #include <functional>
@@ -102,6 +101,14 @@ public:
   /// The output type which should be used for compile actions.
   file_types::ID CompilerOutputType = file_types::ID::TY_INVALID;
 
+  enum class LTOKind {
+    None,
+    LLVMThin,
+    LLVMFull,
+  };
+
+  LTOKind LTOVariant = LTOKind::None;
+
   /// Describes if and how the output of compile actions should be
   /// linked together.
   LinkKind LinkAction = LinkKind::None;
@@ -158,7 +165,10 @@ public:
     Interactive,     // swift
     Batch,           // swiftc
     AutolinkExtract, // swift-autolink-extract
-    SwiftIndent      // swift-indent
+    SwiftIndent,     // swift-indent
+    SymbolGraph,     // swift-symbolgraph
+    APIExtract,      // swift-api-extract
+    APIDigester      // swift-api-digester
   };
 
   class InputInfoMap;
@@ -191,6 +201,11 @@ private:
   /// Indicates whether the driver should check that the input files exist.
   bool CheckInputFilesExist = true;
 
+  /// Indicates that this driver never actually executes any commands but is
+  /// just set up to retrieve the swift-frontend invocation that would be
+  /// executed during compilation.
+  bool IsDummyDriverForFrontendInvocation = false;
+
 public:
   Driver(StringRef DriverExecutable, StringRef Name,
          ArrayRef<const char *> Args, DiagnosticEngine &Diags);
@@ -216,6 +231,14 @@ public:
   bool getCheckInputFilesExist() const { return CheckInputFilesExist; }
 
   void setCheckInputFilesExist(bool Value) { CheckInputFilesExist = Value; }
+
+  bool isDummyDriverForFrontendInvocation() const {
+    return IsDummyDriverForFrontendInvocation;
+  }
+
+  void setIsDummyDriverForFrontendInvocation(bool Value) {
+    IsDummyDriverForFrontendInvocation = Value;
+  }
 
   /// Creates an appropriate ToolChain for a given driver, given the target
   /// specified in \p Args (or the default target). Sets the value of \c
@@ -297,8 +320,7 @@ public:
   /// Construct the OutputFileMap for the driver from the given arguments.
   Optional<OutputFileMap>
   buildOutputFileMap(const llvm::opt::DerivedArgList &Args,
-                     StringRef workingDirectory,
-                     bool addEntriesForSourceRangeDependencies) const;
+                     StringRef workingDirectory) const;
 
   /// Add top-level Jobs to Compilation \p C for the given \p Actions and
   /// OutputInfo.
@@ -363,7 +385,13 @@ private:
   void chooseModuleInterfacePath(Compilation &C, const JobAction *JA,
                                  StringRef workingDirectory,
                                  llvm::SmallString<128> &buffer,
+                                 file_types::ID fileType,
                                  CommandOutput *output) const;
+
+  void chooseModuleSummaryPath(Compilation &C, const TypeToPathMap *OutputMap,
+                               StringRef workingDirectory,
+                               llvm::SmallString<128> &Buf,
+                               CommandOutput *Output) const;
 
   void chooseRemappingOutputPath(Compilation &C, const TypeToPathMap *OutputMap,
                                  CommandOutput *Output) const;
@@ -388,6 +416,11 @@ private:
                                         const TypeToPathMap *OutputMap,
                                         StringRef workingDirectory,
                                         CommandOutput *Output) const;
+  
+  void chooseSymbolGraphOutputPath(Compilation &C,
+                                   const TypeToPathMap *OutputMap,
+                                   StringRef workingDirectory,
+                                   CommandOutput *Output) const;
 
   void chooseLoadedModuleTracePath(Compilation &C,
                                    StringRef workingDirectory,

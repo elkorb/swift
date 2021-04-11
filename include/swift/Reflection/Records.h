@@ -37,6 +37,9 @@ class FieldRecordFlags {
     
     // Is this a mutable `var` property?
     IsVar = 0x2,
+
+    // Is this an artificial field?
+    IsArtificial = 0x4,
   };
   int_type Data = 0;
 
@@ -47,6 +50,10 @@ public:
 
   bool isVar() const {
     return (Data & IsVar) == IsVar;
+  }
+
+  bool isArtificial() const {
+    return (Data & IsArtificial) == IsArtificial;
   }
 
   void setIsIndirectCase(bool IndirectCase=true) {
@@ -61,6 +68,13 @@ public:
       Data |= IsVar;
     else
       Data &= ~IsVar;
+  }
+
+  void setIsArtificial(bool artificial=true) {
+    if (artificial)
+      Data |= IsArtificial;
+    else
+      Data &= ~IsArtificial;
   }
 
   int_type getRawValue() const {
@@ -91,6 +105,10 @@ public:
 
   bool isIndirectCase() const {
     return Flags.isIndirectCase();
+  }
+
+  bool isVar() const {
+    return Flags.isVar();
   }
 };
 
@@ -266,6 +284,8 @@ struct AssociatedTypeRecordIterator {
     return *this;
   }
 
+  AssociatedTypeRecordIterator(const AssociatedTypeRecordIterator &Other)
+      : Cur(Other.Cur), End(Other.End) {}
   AssociatedTypeRecordIterator
   operator=(const AssociatedTypeRecordIterator &Other) {
     return { Other.Cur, Other.End };

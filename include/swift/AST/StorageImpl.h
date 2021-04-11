@@ -45,6 +45,8 @@ enum class AccessorKind {
 #define ACCESSOR(ID) ID,
 #define LAST_ACCESSOR(ID) Last = ID
 #include "swift/AST/AccessorKinds.def"
+#undef ACCESSOR
+#undef LAST_ACCESSOR
 };
 
 const unsigned NumAccessorKinds = unsigned(AccessorKind::Last) + 1;
@@ -52,6 +54,22 @@ const unsigned NumAccessorKinds = unsigned(AccessorKind::Last) + 1;
 static inline IntRange<AccessorKind> allAccessorKinds() {
   return IntRange<AccessorKind>(AccessorKind(0),
                                 AccessorKind(NumAccessorKinds));
+}
+
+/// \returns a user-readable string name for the accessor kind
+static inline StringRef accessorKindName(AccessorKind ak) {
+  switch(ak) {
+
+#define ACCESSOR(ID) ID
+#define SINGLETON_ACCESSOR(ID, KEYWORD)                                        \
+  case AccessorKind::ID:                                                       \
+    return #KEYWORD;
+
+#include "swift/AST/AccessorKinds.def"
+
+#undef ACCESSOR_KEYWORD
+#undef SINGLETON_ACCESSOR
+  }
 }
 
 /// Whether an access to storage is for reading, writing, or both.
@@ -222,6 +240,12 @@ enum class ReadWriteImplKind {
 
   /// There's a modify coroutine.
   Modify,
+
+  /// We have a didSet, so we're either going to use
+  /// MaterializeOrTemporary or the "simple didSet"
+  // access pattern.
+  StoredWithDidSet,
+  InheritedWithDidSet,
 };
 enum { NumReadWriteImplKindBits = 4 };
 
@@ -266,12 +290,14 @@ public:
 
     case WriteImplKind::StoredWithObservers:
       assert(readImpl == ReadImplKind::Stored);
-      assert(readWriteImpl == ReadWriteImplKind::MaterializeToTemporary);
+      assert(readWriteImpl == ReadWriteImplKind::MaterializeToTemporary ||
+             readWriteImpl == ReadWriteImplKind::StoredWithDidSet);
       return;
 
     case WriteImplKind::InheritedWithObservers:
       assert(readImpl == ReadImplKind::Inherited);
-      assert(readWriteImpl == ReadWriteImplKind::MaterializeToTemporary);
+      assert(readWriteImpl == ReadWriteImplKind::MaterializeToTemporary ||
+             readWriteImpl == ReadWriteImplKind::InheritedWithDidSet);
       return;
 
     case WriteImplKind::Set:

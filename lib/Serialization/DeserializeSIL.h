@@ -38,14 +38,24 @@ namespace swift {
     using SerializedFuncTable =
       llvm::OnDiskIterableChainedHashTable<FuncTableInfo>;
 
+    //-----
+    // Deserialization Caches
+    //
+    // NOTE: When adding more serialized tables to the deserializer,
+    // always add invalidate methods and make sure SILModule always
+    // invalidates the deserializer appropriately when it erases a
+    // value that we deserialized here. Otherwise, memory corruption
+    // may result.
+
     std::unique_ptr<SerializedFuncTable> FuncTable;
     MutableArrayRef<ModuleFile::PartiallySerialized<SILFunction*>> Funcs;
 
-    std::unique_ptr<SerializedFuncTable> VTableList;
-    MutableArrayRef<ModuleFile::Serialized<SILVTable*>> VTables;
-
     std::unique_ptr<SerializedFuncTable> GlobalVarList;
-    MutableArrayRef<ModuleFile::Serialized<SILGlobalVariable*>> GlobalVars;
+    MutableArrayRef<ModuleFile::PartiallySerialized<SILGlobalVariable *>>
+        GlobalVars;
+
+    std::unique_ptr<SerializedFuncTable> VTableList;
+    MutableArrayRef<ModuleFile::PartiallySerialized<SILVTable *>> VTables;
 
     std::unique_ptr<SerializedFuncTable> WitnessTableList;
     MutableArrayRef<ModuleFile::PartiallySerialized<SILWitnessTable *>>
@@ -57,6 +67,17 @@ namespace swift {
 
     MutableArrayRef<ModuleFile::PartiallySerialized<SILProperty *>>
     Properties;
+
+    std::unique_ptr<SerializedFuncTable> DifferentiabilityWitnessList;
+    MutableArrayRef<
+        ModuleFile::PartiallySerialized<SILDifferentiabilityWitness *>>
+        DifferentiabilityWitnesses;
+
+    //-----
+    // End Deserialization Caches
+    //
+    // Before adding a new cache here, please read the comment at the
+    // beginning of the deserialization cache section.
 
     /// A declaration will only
     llvm::DenseMap<NormalProtocolConformance *, SILWitnessTable *>
@@ -93,8 +114,8 @@ namespace swift {
     SILBasicBlock *readSILBasicBlock(SILFunction *Fn,
                                      SILBasicBlock *Prev,
                                      SmallVectorImpl<uint64_t> &scratch);
-    /// Read a SIL instruction within a given SIL basic block.
-    bool readSILInstruction(SILFunction *Fn, SILBasicBlock *BB,
+    /// Read a SIL instruction.
+    bool readSILInstruction(SILFunction *Fn,
                             SILBuilder &Builder,
                             unsigned RecordKind,
                             SmallVectorImpl<uint64_t> &scratch);
@@ -113,13 +134,25 @@ namespace swift {
     SILType getSILType(Type ty, SILValueCategory category,
                        SILFunction *inContext);
 
+    SILDifferentiabilityWitness *
+    getSILDifferentiabilityWitnessForReference(StringRef mangledKey);
+
     SILFunction *getFuncForReference(StringRef Name, SILType Ty);
     SILFunction *getFuncForReference(StringRef Name);
     SILVTable *readVTable(serialization::DeclID);
     SILGlobalVariable *getGlobalForReference(StringRef Name);
     SILGlobalVariable *readGlobalVar(StringRef Name);
-    SILWitnessTable *readWitnessTable(serialization::DeclID,
+
+    /// Read and return the witness table identified with \p WId.
+    SILWitnessTable *readWitnessTable(serialization::DeclID WId,
                                       SILWitnessTable *existingWt);
+
+    /// Read the witness table identified with \p WId, return the table or
+    /// the first error if any.
+    llvm::Expected<SILWitnessTable *>
+      readWitnessTableChecked(serialization::DeclID WId,
+                              SILWitnessTable *existingWt);
+
     void readWitnessTableEntries(
            llvm::BitstreamEntry &entry,
            std::vector<SILWitnessTable::Entry> &witnessEntries,
@@ -129,6 +162,8 @@ namespace swift {
     SILDefaultWitnessTable *
     readDefaultWitnessTable(serialization::DeclID,
                             SILDefaultWitnessTable *existingWt);
+    SILDifferentiabilityWitness *
+        readDifferentiabilityWitness(serialization::DeclID);
 
     Optional<KeyPathPatternComponent>
     readKeyPathComponent(ArrayRef<uint64_t> ListOfValues, unsigned &nextValue);
@@ -148,12 +183,61 @@ public:
     SILWitnessTable *lookupWitnessTable(SILWitnessTable *wt);
     SILDefaultWitnessTable *
     lookupDefaultWitnessTable(SILDefaultWitnessTable *wt);
+    SILDifferentiabilityWitness *
+    lookupDifferentiabilityWitness(StringRef mangledDiffWitnessKey);
 
     /// Invalidate all cached SILFunctions.
     void invalidateFunctionCache();
 
     /// Invalidate a specific cached SILFunction.
     bool invalidateFunction(SILFunction *F);
+
+    /// Invalidate all cached SILGlobalVariable.
+    void invalidateGlobalVariableCache();
+
+    /// Invalidate a specific cached GlobalVariable.
+    bool invalidateGlobalVariable(SILGlobalVariable *gv);
+
+    /// Invalidate all cached SILVTable.
+    void invalidateVTableCache();
+
+    /// Invalidate a specific cached SILVTable.
+    bool invalidateVTable(SILVTable *v);
+
+    /// Invalidate all cached SILWitnessTable.
+    void invalidateWitnessTableCache();
+
+    /// Invalidate a specific cached SILWitnessTable.
+    bool invalidateWitnessTable(SILWitnessTable *v);
+
+    /// Invalidate all cached SILDefaultWitnessTable.
+    void invalidateDefaultWitnessTableCache();
+
+    /// Invalidate a specific cached SILDefaultWitnessTable.
+    bool invalidateDefaultWitnessTable(SILDefaultWitnessTable *v);
+
+    /// Invalidate all cached SILProperty.
+    void invalidatePropertyCache();
+
+    /// Invalidate a specific cached SILProperty.
+    bool invalidateProperty(SILProperty *v);
+
+    /// Invalidate all cached SILDifferentiabilityWitness.
+    void invalidateDifferentiabilityWitnessCache();
+
+    /// Invalidate a specific cached SILDifferentiabilityWitness.
+    bool invalidateDifferentiabilityWitness(SILDifferentiabilityWitness *v);
+
+    /// Invalidate all caches in this deserializer.
+    void invalidateAllCaches() {
+      invalidateFunctionCache();
+      invalidateGlobalVariableCache();
+      invalidateVTableCache();
+      invalidateWitnessTableCache();
+      invalidateDefaultWitnessTableCache();
+      invalidatePropertyCache();
+      invalidateDifferentiabilityWitnessCache();
+    }
 
     /// Deserialize all SILFunctions, VTables, WitnessTables, and
     /// DefaultWitnessTables inside the module, and add them to SILMod.
@@ -172,6 +256,7 @@ public:
       getAllWitnessTables();
       getAllDefaultWitnessTables();
       getAllProperties();
+      getAllDifferentiabilityWitnesses();
     }
 
     /// Deserialize all SILFunctions inside the module and add them to SILMod.
@@ -194,6 +279,10 @@ public:
     /// Deserialize all Property descriptors inside the module and add them
     /// to SILMod.
     void getAllProperties();
+
+    /// Deserialize all DifferentiabilityWitnesses inside the module and add
+    /// them to SILMod.
+    void getAllDifferentiabilityWitnesses();
 
     SILDeserializer(ModuleFile *MF, SILModule &M,
                     DeserializationNotificationHandlerSet *callback);

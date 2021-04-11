@@ -31,7 +31,6 @@ namespace swift {
   class InFlightDiagnostic;
   class Stmt;
   class TopLevelCodeDecl;
-  class TypeChecker;
   class ValueDecl;
 
 /// Emit diagnostics for syntactic restrictions on a given expression.
@@ -39,10 +38,9 @@ void performSyntacticExprDiagnostics(const Expr *E, const DeclContext *DC,
                                      bool isExprStmt);
 
 /// Emit diagnostics for a given statement.
-void performStmtDiagnostics(ASTContext &ctx, const Stmt *S);
+void performStmtDiagnostics(const Stmt *S, DeclContext *DC);
 
-void performAbstractFuncDeclDiagnostics(AbstractFunctionDecl *AFD,
-                                        BraceStmt *body);
+void performAbstractFuncDeclDiagnostics(AbstractFunctionDecl *AFD);
 
 /// Perform diagnostics on the top level code declaration.
 void performTopLevelDeclDiagnostics(TopLevelCodeDecl *TLCD);
@@ -84,6 +82,12 @@ void diagnoseUnownedImmediateDeallocation(ASTContext &ctx,
                                           SourceLoc equalLoc,
                                           const Expr *initializer);
 
+/// If \p expr is a call to a known function with a requirement that some
+/// arguments must be constants, whether those arguments are passed only
+/// constants. Otherwise, diagnose and emit errors.
+void diagnoseConstantArgumentRequirement(const Expr *expr,
+                                         const DeclContext *declContext);
+
 /// Attempt to fix the type of \p decl so that it's a valid override for
 /// \p base...but only if we're highly confident that we know what the user
 /// should have written.
@@ -104,6 +108,13 @@ void fixItEncloseTrailingClosure(ASTContext &ctx,
                                  const CallExpr *call,
                                  Identifier closureLabel);
 
+/// Check that we use the async version of a function where available
+///
+/// If a completion-handler function is called from an async context and it has
+/// a '@completionHandlerAsync' attribute, we emit a diagnostic suggesting the
+/// async call.
+void checkFunctionAsyncUsage(AbstractFunctionDecl *decl);
+void checkPatternBindingDeclAsyncUsage(PatternBindingDecl *decl);
 } // namespace swift
 
 #endif // SWIFT_SEMA_MISC_DIAGNOSTICS_H

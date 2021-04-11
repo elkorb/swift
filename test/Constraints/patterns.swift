@@ -21,7 +21,7 @@ default:
 }
 
 switch (1, 2) {
-case (var a, a): // expected-error {{use of unresolved identifier 'a'}}
+case (var a, a): // expected-error {{cannot find 'a' in scope}}
   ()
 }
 
@@ -131,7 +131,7 @@ default:
 
 // <rdar://problem/19382878> Introduce new x? pattern
 switch Optional(42) {
-case let x?: break // expected-warning{{immutable value 'x' was never used; consider replacing with '_' or removing it}}
+case let x?: break // expected-warning{{immutable value 'x' was never used; consider replacing with '_' or removing it}} {{10-11=_}}
 case nil: break
 }
 
@@ -260,7 +260,7 @@ if case .foo = sr2057 { } // Ok
 // Invalid 'is' pattern
 class SomeClass {}
 if case let doesNotExist as SomeClass:AlsoDoesNotExist {}
-// expected-error@-1 {{use of undeclared type 'AlsoDoesNotExist'}}
+// expected-error@-1 {{cannot find type 'AlsoDoesNotExist' in scope}}
 // expected-error@-2 {{variable binding in a condition requires an initializer}}
 
 // `.foo` and `.bar(...)` pattern syntax should also be able to match
@@ -274,9 +274,7 @@ struct StaticMembers: Equatable {
   static var optProp: Optional = StaticMembers()
 
   static func method(_: Int) -> StaticMembers { return prop }
-  // expected-note@-1 {{found candidate with type '(Int) -> StaticMembers'}}
   static func method(withLabel: Int) -> StaticMembers { return prop }
-  // expected-note@-1 {{found candidate with type '(Int) -> StaticMembers'}}
   static func optMethod(_: Int) -> StaticMembers? { return optProp }
 
   static func ==(x: StaticMembers, y: StaticMembers) -> Bool { return true }
@@ -298,10 +296,9 @@ switch staticMembers {
   // expected-note@-2 {{coalesce using '??' to provide a default when the optional value contains 'nil'}}
 
   case .prop: break
-  // TODO: repeated error message
-  case .optProp: break // expected-error* {{not unwrapped}}
+  case .optProp: break
 
-  case .method: break // expected-error{{no exact matches in call to static method 'method'}}
+  case .method: break // expected-error{{member 'method' expects argument of type 'Int'}}
   case .method(0): break
   case .method(_): break // expected-error{{'_' can only appear in a pattern}}
   case .method(let x): break // expected-error{{cannot appear in an expression}}
@@ -313,9 +310,6 @@ switch staticMembers {
 
   case .optMethod: break // expected-error{{member 'optMethod' expects argument of type 'Int'}}
   case .optMethod(0): break
-  // expected-error@-1 {{value of optional type 'StaticMembers?' must be unwrapped to a value of type 'StaticMembers'}}
-  // expected-note@-2 {{coalesce}}
-  // expected-note@-3 {{force-unwrap}}
 }
 
 _ = 0
@@ -344,7 +338,7 @@ func rdar32241441() {
 
 
 // SR-6100
-struct One<Two> {
+struct One<Two> { // expected-note{{'Two' declared as parameter to type 'One'}}
     public enum E: Error {
         // if you remove associated value, everything works
         case SomeError(String)
@@ -354,7 +348,7 @@ struct One<Two> {
 func testOne() {
   do {
   } catch let error { // expected-warning{{'catch' block is unreachable because no errors are thrown in 'do' block}}
-    if case One.E.SomeError = error {} // expected-error{{generic enum type 'One.E' is ambiguous without explicit generic parameters when matching value of type 'Error'}}
+    if case One.E.SomeError = error {} // expected-error{{generic parameter 'Two' could not be inferred}}
   }
 }
 
@@ -433,3 +427,90 @@ switch sr7799_1 {
 
 if case .baz = sr7799_1 {} // Ok
 if case .bar? = sr7799_1 {} // Ok
+
+// rdar://problem/60048356 - `if case` fails when `_` pattern doesn't have a label
+func rdar_60048356() {
+  typealias Info = (code: ErrorCode, reason: String)
+
+  enum ErrorCode {
+    case normalClosure
+  }
+
+  enum Failure {
+    case closed(Info) // expected-note {{'closed' declared here}}
+  }
+
+  enum Reason {
+    case close(Failure)
+  }
+
+  func test(_ reason: Reason) {
+    if case .close(.closed((code: .normalClosure, _))) = reason { // Ok
+    }
+  }
+
+  // rdar://problem/60061646
+  func test(e: Failure) {
+    if case .closed(code: .normalClosure, _) = e { // Ok
+    // expected-warning@-1 {{enum case 'closed' has one associated value that is a tuple of 2 elements}}
+    }
+  }
+
+  enum E {
+    case foo((x: Int, y: Int)) // expected-note {{declared here}}
+    case bar(x: Int, y: Int)   // expected-note {{declared here}}
+  }
+
+  func test_destructing(e: E) {
+    if case .foo(let x, let y) = e { // Ok (destructring)
+    // expected-warning@-1 {{enum case 'foo' has one associated value that is a tuple of 2 elements}}
+      _ = x == y
+    }
+    if case .bar(let tuple) = e { // Ok (matching via tuple)
+    // expected-warning@-1 {{enum case 'bar' has 2 associated values; matching them as a tuple is deprecated}}
+      _ = tuple.0 == tuple.1
+    }
+  }
+}
+
+// rdar://problem/63510989 - valid pattern doesn't type-check
+func rdar63510989() {
+  enum Value : P {
+    func p() {}
+  }
+
+  enum E {
+    case single(P?)
+    case double(P??)
+    case triple(P???)
+  }
+
+  func test(e: E) {
+    if case .single(_ as Value) = e {} // Ok
+    if case .single(let v as Value) = e {} // Ok
+    // expected-warning@-1 {{immutable value 'v' was never used; consider replacing with '_' or removing it}}
+    if case .double(_ as Value) = e {} // Ok
+    if case .double(let v as Value) = e {} // Ok
+    // expected-warning@-1 {{immutable value 'v' was never used; consider replacing with '_' or removing it}}
+    if case .double(let v as Value?) = e {} // Ok
+    // expected-warning@-1 {{immutable value 'v' was never used; consider replacing with '_' or removing it}}
+    if case .triple(_ as Value) = e {} // Ok
+    if case .triple(let v as Value) = e {} // Ok
+    // expected-warning@-1 {{immutable value 'v' was never used; consider replacing with '_' or removing it}}
+    if case .triple(let v as Value?) = e {} // Ok
+    // expected-warning@-1 {{immutable value 'v' was never used; consider replacing with '_' or removing it}}
+    if case .triple(let v as Value??) = e {} // Ok
+    // expected-warning@-1 {{immutable value 'v' was never used; consider replacing with '_' or removing it}}
+  }
+}
+
+// rdar://problem/64157451 - compiler crash when using undefined type in pattern
+func rdar64157451() {
+  enum E {
+  case foo(Int)
+  }
+
+  func test(e: E) {
+    if case .foo(let v as DoeNotExist) = e {} // expected-error {{cannot find type 'DoeNotExist' in scope}}
+  }
+}

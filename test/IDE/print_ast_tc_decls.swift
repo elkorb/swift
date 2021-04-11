@@ -241,8 +241,8 @@ struct d0100_FooStruct {
   static func overloadedStaticFunc2(x: Double) -> Int { return 0 }
 // PASS_COMMON-NEXT: {{^}}  static func overloadedStaticFunc2(x: Double) -> Int{{$}}
 }
-// PASS_COMMON-NEXT: {{^}}  init(instanceVar1: Int = 0){{$}}
 // PASS_COMMON-NEXT: {{^}}  init(){{$}}
+// PASS_COMMON-NEXT: {{^}}  init(instanceVar1: Int = 0){{$}}
 // PASS_COMMON-NEXT: {{^}}}{{$}}
 
 extension d0100_FooStruct {
@@ -452,7 +452,7 @@ class d0120_TestClassBase {
 }
 
 class d0121_TestClassDerived : d0120_TestClassBase {
-// PASS_COMMON-LABEL: {{^}}class d0121_TestClassDerived : d0120_TestClassBase {{{$}}
+// PASS_COMMON-LABEL: {{^}}@_inheritsConvenienceInitializers {{()?}}class d0121_TestClassDerived : d0120_TestClassBase {{{$}}
 
   required init() { super.init() }
 // PASS_COMMON-NEXT: {{^}}  required init(){{$}}
@@ -516,19 +516,19 @@ class d0170_TestAvailability {
   @available(OSX, unavailable)
   func f3() {}
 // PASS_COMMON-NEXT: {{^}}  @available(iOS, unavailable){{$}}
-// PASS_COMMON-NEXT: {{^}}  @available(OSX, unavailable){{$}}
+// PASS_COMMON-NEXT: {{^}}  @available(macOS, unavailable){{$}}
 // PASS_COMMON-NEXT: {{^}}  func f3(){{$}}
 
   @available(iOS 8.0, OSX 10.10, *)
   func f4() {}
-// PASS_COMMON-NEXT: {{^}}  @available(iOS 8.0, OSX 10.10, *){{$}}
+// PASS_COMMON-NEXT: {{^}}  @available(iOS 8.0, macOS 10.10, *){{$}}
 // PASS_COMMON-NEXT: {{^}}  func f4(){{$}}
 
 // Convert long-form @available() to short form when possible.
   @available(iOS, introduced: 8.0)
   @available(OSX, introduced: 10.10)
   func f5() {}
-// PASS_COMMON-NEXT: {{^}}  @available(iOS 8.0, OSX 10.10, *){{$}}
+// PASS_COMMON-NEXT: {{^}}  @available(iOS 8.0, macOS 10.10, *){{$}}
 // PASS_COMMON-NEXT: {{^}}  func f5(){{$}}
 }
 
@@ -596,8 +596,8 @@ struct d0200_EscapedIdentifiers {
 // PASS_COMMON-NEXT: {{^}}  enum `enum` {{{$}}
 // PASS_COMMON-NEXT: {{^}}    case `case`{{$}}
 // PASS_COMMON-NEXT: {{^}}    {{.*}}static func __derived_enum_equals(_ a: d0200_EscapedIdentifiers.`enum`, _ b: d0200_EscapedIdentifiers.`enum`) -> Bool
-// PASS_COMMON-NEXT: {{^}}    var hashValue: Int { get }{{$}}
 // PASS_COMMON-NEXT: {{^}}    func hash(into hasher: inout Hasher)
+// PASS_COMMON-NEXT: {{^}}    var hashValue: Int { get }{{$}}
 // PASS_COMMON-NEXT: {{^}}  }{{$}}
 
   class `class` {}
@@ -611,15 +611,15 @@ struct d0200_EscapedIdentifiers {
 // PASS_ONE_LINE_TYPEREPR-DAG: {{^}}  typealias `protocol` = `class`{{$}}
 
   class `extension` : `class` {}
-// PASS_ONE_LINE_TYPE-DAG: {{^}}  class `extension` : d0200_EscapedIdentifiers.`class` {{{$}}
-// PASS_ONE_LINE_TYPEREPR-DAG: {{^}}  class `extension` : `class` {{{$}}
-// PASS_COMMON:      {{^}}    @objc deinit{{$}}
-// PASS_COMMON-NEXT: {{^}}    {{(override )?}}init(){{$}}
+// PASS_ONE_LINE_TYPE-DAG: {{^}}  @_inheritsConvenienceInitializers class `extension` : d0200_EscapedIdentifiers.`class` {{{$}}
+// PASS_ONE_LINE_TYPEREPR-DAG: {{^}}  @_inheritsConvenienceInitializers class `extension` : `class` {{{$}}
+// PASS_COMMON:      {{^}}    {{(override )?}}init(){{$}}
+// PASS_COMMON-NEXT: {{^}}    @objc deinit{{$}}
 // PASS_COMMON-NEXT: {{^}}  }{{$}}
 
   func `func`<`let`: `protocol`, `where`>(
       class: Int, struct: `protocol`, foo: `let`, bar: `where`) where `where` : `protocol` {}
-// PASS_COMMON-NEXT: {{^}}  func `func`<`let`, `where`>(class: Int, struct: {{(d0200_EscapedIdentifiers.)?}}`protocol`, foo: `let`, bar: `where`) where `let` : {{(d0200_EscapedIdentifiers.)?}}`protocol`, `where` : {{(d0200_EscapedIdentifiers.)?}}`protocol`{{$}}
+// PASS_COMMON-NEXT: {{^}}  func `func`<`let`, `where`>(class: Int, struct: {{(d0200_EscapedIdentifiers.)?}}`protocol`, foo: `let`, bar: `where`) where `let` : {{(d0200_EscapedIdentifiers.)?}}`class`, `where` : {{(d0200_EscapedIdentifiers.)?}}`class`{{$}}
 
   var `var`: `struct` = `struct`()
 // PASS_COMMON-NEXT: {{^}}  @_hasInitialValue var `var`: {{(d0200_EscapedIdentifiers.)?}}`struct`{{$}}
@@ -748,7 +748,7 @@ class d0260_ExplodePattern_TestClassBase {
 }
 
 class d0261_ExplodePattern_TestClassDerived : d0260_ExplodePattern_TestClassBase {
-// PASS_EXPLODE_PATTERN-LABEL: {{^}}class d0261_ExplodePattern_TestClassDerived : d0260_ExplodePattern_TestClassBase {{{$}}
+// PASS_EXPLODE_PATTERN-LABEL: {{^}}@_inheritsConvenienceInitializers class d0261_ExplodePattern_TestClassDerived : d0260_ExplodePattern_TestClassBase {{{$}}
 
   override final var baseProp2: Int {
     get {
@@ -791,13 +791,13 @@ class ClassWithInheritance2 : FooProtocol, BarProtocol {}
 // PASS_ONE_LINE-DAG: {{^}}class ClassWithInheritance2 : FooProtocol, BarProtocol {{{$}}
 
 class ClassWithInheritance3 : FooClass {}
-// PASS_ONE_LINE-DAG: {{^}}class ClassWithInheritance3 : FooClass {{{$}}
+// PASS_ONE_LINE-DAG: {{^}}@_inheritsConvenienceInitializers class ClassWithInheritance3 : FooClass {{{$}}
 
 class ClassWithInheritance4 : FooClass, FooProtocol {}
-// PASS_ONE_LINE-DAG: {{^}}class ClassWithInheritance4 : FooClass, FooProtocol {{{$}}
+// PASS_ONE_LINE-DAG: {{^}}@_inheritsConvenienceInitializers class ClassWithInheritance4 : FooClass, FooProtocol {{{$}}
 
 class ClassWithInheritance5 : FooClass, FooProtocol, BarProtocol {}
-// PASS_ONE_LINE-DAG: {{^}}class ClassWithInheritance5 : FooClass, FooProtocol, BarProtocol {{{$}}
+// PASS_ONE_LINE-DAG: {{^}}@_inheritsConvenienceInitializers class ClassWithInheritance5 : FooClass, FooProtocol, BarProtocol {{{$}}
 
 class ClassWithInheritance6 : QuxProtocol, SubFooProtocol {
   typealias Qux = Int
@@ -1025,8 +1025,8 @@ enum d2000_EnumDecl1 {
 // PASS_COMMON-NEXT: {{^}}  case ED1_First{{$}}
 // PASS_COMMON-NEXT: {{^}}  case ED1_Second{{$}}
 // PASS_COMMON-NEXT: {{^}}  {{.*}}static func __derived_enum_equals(_ a: d2000_EnumDecl1, _ b: d2000_EnumDecl1) -> Bool
-// PASS_COMMON-NEXT: {{^}}  var hashValue: Int { get }{{$}}
 // PASS_COMMON-NEXT: {{^}}  func hash(into hasher: inout Hasher)
+// PASS_COMMON-NEXT: {{^}}  var hashValue: Int { get }{{$}}
 // PASS_COMMON-NEXT: {{^}}}{{$}}
 
 enum d2100_EnumDecl2 {
@@ -1179,8 +1179,8 @@ struct d2800_ProtocolWithAssociatedType1Impl : d2700_ProtocolWithAssociatedType1
 
 // PASS_COMMON: {{^}}struct d2800_ProtocolWithAssociatedType1Impl : d2700_ProtocolWithAssociatedType1 {{{$}}
 // PASS_COMMON-NEXT: {{^}}  func returnsTA1() -> Int{{$}}
-// PASS_COMMON-NEXT: {{^}}  init(){{$}}
 // PASS_COMMON-NEXT: {{^}}  typealias TA1 = Int
+// PASS_COMMON-NEXT: {{^}}  init(){{$}}
 // PASS_COMMON-NEXT: {{^}}}{{$}}
 
 //===---
@@ -1217,6 +1217,21 @@ struct GenericParams1<
 // FIXME: in protocol compositions protocols are listed in reverse order.
 //
 // PASS_ONE_LINE_TYPEREPR-DAG: {{^}}  func genericParams1<GenericFoo, GenericFooX, GenericBar, GenericBaz>(a: StructGenericFoo, b: StructGenericBar, c: StructGenericBaz, d: GenericFoo, e: GenericFooX, f: GenericBar, g: GenericBaz) where GenericFoo : FooProtocol, GenericFooX : FooClass, GenericBar : BarProtocol, GenericBar : FooProtocol{{$}}
+
+  func contextualWhereClause1() where StructGenericBaz == Never {}
+  // PASS_PRINT_AST: func contextualWhereClause1() where StructGenericBaz == Never{{$}}
+
+  subscript(index: Int) -> Never where StructGenericBaz: FooProtocol {
+    return fatalError()
+  }
+  // PASS_PRINT_AST: subscript(index: Int) -> Never where StructGenericBaz : FooProtocol { get }{{$}}
+}
+extension GenericParams1 where StructGenericBaz: FooProtocol {
+  static func contextualWhereClause2() where StructGenericBaz: FooClass {}
+  // PASS_PRINT_AST: static func contextualWhereClause2() where StructGenericBaz : FooClass{{$}}
+
+  typealias ContextualWhereClause3 = Never where StructGenericBaz: QuxProtocol, StructGenericBaz.Qux == Void
+  // PASS_PRINT_AST: typealias ContextualWhereClause3 = Never where StructGenericBaz : QuxProtocol, StructGenericBaz.Qux == Void{{$}}
 }
 
 struct GenericParams2<T : FooProtocol> where T : BarProtocol {}

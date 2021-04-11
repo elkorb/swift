@@ -30,6 +30,9 @@
 ///
 //===----------------------------------------------------------------------===//
 
+#ifndef SWIFT_SIL_SILINSTRUCTIONWORKLIST_H
+#define SWIFT_SIL_SILINSTRUCTIONWORKLIST_H
+
 #include "swift/Basic/BlotSetVector.h"
 #include "swift/SIL/SILInstruction.h"
 #include "swift/SIL/SILValue.h"
@@ -71,6 +74,9 @@ public:
 
   /// Returns true if the worklist is empty.
   bool isEmpty() const { return worklist.empty(); }
+
+  /// Returns the number of elements in the worklist.
+  unsigned size() const { return worklist.size(); }
 
   /// Add the specified instruction to the worklist if it isn't already in it.
   void add(SILInstruction *instruction) {
@@ -209,7 +215,7 @@ public:
     return newInstruction;
   }
 
-  // This method is to be used when an instruction is found to be dead,
+  // This method is to be used when an instruction is found to be dead or
   // replaceable with another preexisting expression. Here we add all uses of
   // instruction to the worklist, and replace all uses of instruction with the
   // new value.
@@ -339,3 +345,5 @@ public:
 };
 
 } // end namespace swift
+
+#endif // SWIFT_SIL_SILINSTRUCTIONWORKLIST_H

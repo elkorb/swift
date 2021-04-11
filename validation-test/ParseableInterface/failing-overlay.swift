@@ -3,6 +3,4 @@
 
 import ImportsOverlay
 
-// FIXME: It would be better if this had a useful location, like inside the
-// C header that caused the importing of the overlay.
-// CHECK: <unknown>:0: error: failed to load module 'HasOverlay'
+// CHECK: HasOverlay.swiftinterface:1:1: error: failed to build module 'HasOverlay' for importation due to the errors above; the textual interface may be broken by project issues, differences between compilers (the producer '(unspecified, file possibly handwritten)' and this compiler '{{.*Swift version.*}}') or a compiler bug

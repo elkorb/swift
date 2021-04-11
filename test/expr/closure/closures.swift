@@ -53,7 +53,7 @@ func funcdecl5(_ a: Int, _ y: Int) {
   var b = a.1+a.f
 
   // Tuple expressions with named elements.
-  var i : (y : Int, x : Int) = (x : 42, y : 11)
+  var i : (y : Int, x : Int) = (x : 42, y : 11) // expected-warning {{expression shuffles the elements of this tuple; this behavior is deprecated}}
   funcdecl1(123, 444)
   
   // Calls.
@@ -116,9 +116,13 @@ func f0(_ a: Any) -> Int { return 1 }
 assert(f0(1) == 1)
 
 
-var selfRef = { selfRef() } // expected-error {{variable used within its own initial value}}
+var selfRef = { selfRef() }
+// expected-note@-1 2{{through reference here}}
+// expected-error@-2 {{circular reference}}
+
 var nestedSelfRef = {
-  var recursive = { nestedSelfRef() } // expected-error {{variable used within its own initial value}}
+  var recursive = { nestedSelfRef() }
+  // expected-warning@-1 {{variable 'recursive' was never mutated; consider changing to 'let' constant}}
   recursive()
 }
 
@@ -140,12 +144,14 @@ func anonymousClosureArgsInClosureWithArgs() {
   }
   var a5 = { (_: [Int], w: [Int]) in
     f($0.count) // expected-error {{anonymous closure arguments cannot be used inside a closure that has explicit arguments}}
-    f($1.count) // expected-error {{anonymous closure arguments cannot be used inside a closure that has explicit arguments; did you mean 'w'?}} {{7-9=w}} expected-error {{cannot convert value of type 'Int' to expected argument type 'String'}}
+    f($1.count) // expected-error {{anonymous closure arguments cannot be used inside a closure that has explicit arguments; did you mean 'w'?}} {{7-9=w}}
+    // expected-error@-1 {{cannot convert value of type 'Int' to expected argument type 'String'}}
   }
 }
 
 func doStuff(_ fn : @escaping () -> Int) {}
 func doVoidStuff(_ fn : @escaping () -> ()) {}
+func doVoidStuffNonEscaping(_ fn: () -> ()) {}
 
 // <rdar://problem/16193162> Require specifying self for locations in code where strong reference cycles are likely
 class ExplicitSelfRequiredTest {
@@ -318,14 +324,14 @@ func testCaptureBehavior(_ ptr : SomeClass) {
   doStuff { [weak v1] in v1!.foo() }
   // expected-warning @+2 {{variable 'v1' was written to, but never read}}
   doStuff { [weak v1,                 // expected-note {{previous}}
-             weak v1] in v1!.foo() }  // expected-error {{definition conflicts with previous value}}
+             weak v1] in v1!.foo() }  // expected-error {{invalid redeclaration of 'v1'}}
   doStuff { [unowned v2] in v2.foo() }
   doStuff { [unowned(unsafe) v2] in v2.foo() }
   doStuff { [unowned(safe) v2] in v2.foo() }
   doStuff { [weak v1, weak v2] in v1!.foo() + v2!.foo() }
 
   let i = 42
-  // expected-warning @+1 {{variable 'i' was never mutated}} {{19-20=let}}
+  // expected-warning @+1 {{variable 'i' was never mutated}}
   doStuff { [weak i] in i! }   // expected-error {{'weak' may only be applied to class and class-bound protocol types, not 'Int'}}
 }
 
@@ -442,13 +448,13 @@ class r22344208 {
   }
 }
 
-var f = { (s: Undeclared) -> Int in 0 } // expected-error {{use of undeclared type 'Undeclared'}}
+var f = { (s: Undeclared) -> Int in 0 } // expected-error {{cannot find type 'Undeclared' in scope}}
 
 // <rdar://problem/21375863> Swift compiler crashes when using closure, declared to return illegal type.
 func r21375863() {
-  var width = 0
-  var height = 0
-  var bufs: [[UInt8]] = (0..<4).map { _ -> [asdf] in  // expected-error {{use of undeclared type 'asdf'}}
+  var width = 0 // expected-warning {{variable 'width' was never mutated}}
+  var height = 0 // expected-warning {{variable 'height' was never mutated}}
+  var bufs: [[UInt8]] = (0..<4).map { _ -> [asdf] in  // expected-error {{cannot find type 'asdf' in scope}} expected-warning {{variable 'bufs' was never used}}
     [UInt8](repeating: 0, count: width*height)
   }
 }
@@ -482,4 +488,104 @@ func lvalueCapture<T>(c: GenericClass<T>) {
 let closure = { // expected-error {{unable to infer complex closure return type; add explicit type to disambiguate}} {{16-16= () -> <#Result#> in }}
   var helper = true
   return helper
+}
+
+// SR-9839
+func SR9839(_ x: @escaping @convention(block) () -> Void) {}
+
+func id<T>(_ x: T) -> T {
+  return x
+}
+
+var qux: () -> Void = {}
+
+SR9839(qux)
+SR9839(id(qux)) // expected-error {{conflicting arguments to generic parameter 'T' ('() -> Void' vs. '@convention(block) () -> Void')}}
+
+func forceUnwrap<T>(_ x: T?) -> T {
+  return x!
+}
+
+var qux1: (() -> Void)? = {}
+
+SR9839(qux1!)
+SR9839(forceUnwrap(qux1))
+
+// rdar://problem/65155671 - crash referencing parameter of outer closure
+func rdar65155671(x: Int) {
+    { a in
+      _ = { [a] in a }
+    }(x)
+}
+
+func sr3186<T, U>(_ f: (@escaping (@escaping (T) -> U) -> ((T) -> U))) -> ((T) -> U) {
+    return { x in return f(sr3186(f))(x) }
+}
+
+class SR3186 {
+  init() {
+    // expected-warning@+1{{capture 'self' was never used}}
+    let v = sr3186 { f in { [unowned self, f] x in x != 1000 ? f(x + 1) : "success" } }(0)
+    print("\(v)")
+  }
+}
+
+// Apply the explicit 'self' rule even if it referrs to a capture, if
+// we're inside a nested closure
+class SR14120 {
+  func operation() {}
+
+  func test1() {
+    doVoidStuff { [self] in
+      operation()
+    }
+  }
+
+  func test2() {
+    doVoidStuff { [self] in
+      doVoidStuff {
+        // expected-error@+3 {{call to method 'operation' in closure requires explicit use of 'self'}}
+        // expected-note@-2 {{capture 'self' explicitly to enable implicit 'self' in this closure}}
+        // expected-note@+1 {{reference 'self.' explicitly}}
+        operation()
+      }
+    }
+  }
+
+  func test3() {
+    doVoidStuff { [self] in
+      doVoidStuff { [self] in
+        operation()
+      }
+    }
+  }
+
+  func test4() {
+    doVoidStuff { [self] in
+      doVoidStuff {
+        self.operation()
+      }
+    }
+  }
+
+  func test5() {
+    doVoidStuff { [self] in
+      doVoidStuffNonEscaping {
+        operation()
+      }
+    }
+  }
+
+  func test6() {
+    doVoidStuff { [self] in
+      doVoidStuff { [self] in
+        doVoidStuff {
+          // expected-error@+3 {{call to method 'operation' in closure requires explicit use of 'self'}}
+          // expected-note@-2 {{capture 'self' explicitly to enable implicit 'self' in this closure}}
+          // expected-note@+1 {{reference 'self.' explicitly}}
+          operation()
+        }
+      }
+    }
+  }
 }

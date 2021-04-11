@@ -19,10 +19,11 @@
 #ifndef SWIFT_ABI_METADATAVALUES_H
 #define SWIFT_ABI_METADATAVALUES_H
 
+#include "swift/ABI/KeyPath.h"
+#include "swift/ABI/ProtocolDispatchStrategy.h"
 #include "swift/AST/Ownership.h"
 #include "swift/Basic/LLVM.h"
 #include "swift/Basic/FlagSet.h"
-#include "swift/Runtime/Unreachable.h"
 
 #include <stdlib.h>
 #include <stdint.h>
@@ -41,6 +42,13 @@ enum {
 
   /// The number of words in a yield-many coroutine buffer.
   NumWords_YieldManyBuffer = 8,
+
+  /// The number of words (in addition to the heap-object header)
+  /// in a default actor.
+  NumWords_DefaultActor = 10,
+
+  /// The number of words in a task group.
+  NumWords_TaskGroup = 32,
 };
 
 struct InProcess;
@@ -112,6 +120,12 @@ enum class NominalTypeKind : uint32_t {
 
 /// The maximum supported type alignment.
 const size_t MaximumAlignment = 16;
+
+/// The alignment of a DefaultActor.
+const size_t Alignment_DefaultActor = MaximumAlignment;
+
+/// The alignment of a TaskGroup.
+const size_t Alignment_TaskGroup = MaximumAlignment;
 
 /// Flags stored in the value-witness table.
 template <typename int_type>
@@ -264,7 +278,16 @@ enum class ClassFlags : uint32_t {
   UsesSwiftRefcounting = 0x2,
 
   /// Has this class a custom name, specified with the @objc attribute?
-  HasCustomObjCName = 0x4
+  HasCustomObjCName = 0x4,
+
+  /// Whether this metadata is a specialization of a generic metadata pattern
+  /// which was created during compilation.
+  IsStaticSpecialization = 0x8,
+
+  /// Whether this metadata is a specialization of a generic metadata pattern
+  /// which was created during compilation and made to be canonical by
+  /// modifying the metadata accessor.
+  IsCanonicalStaticSpecialization = 0x10,
 };
 inline bool operator&(ClassFlags a, ClassFlags b) {
   return (uint32_t(a) & uint32_t(b)) != 0;
@@ -294,6 +317,9 @@ private:
     KindMask = 0x0F,                // 16 kinds should be enough for anybody
     IsInstanceMask = 0x10,
     IsDynamicMask = 0x20,
+    IsAsyncMask = 0x40,
+    ExtraDiscriminatorShift = 16,
+    ExtraDiscriminatorMask = 0xFFFF0000,
   };
 
   int_type Value;
@@ -320,6 +346,22 @@ public:
     return copy;
   }
 
+  MethodDescriptorFlags withIsAsync(bool isAsync) const {
+    auto copy = *this;
+    if (isAsync)
+      copy.Value |= IsAsyncMask;
+    else
+      copy.Value &= ~IsAsyncMask;
+    return copy;
+  }
+
+  MethodDescriptorFlags withExtraDiscriminator(uint16_t value) const {
+    auto copy = *this;
+    copy.Value = (copy.Value & ~ExtraDiscriminatorMask)
+               | (int_type(value) << ExtraDiscriminatorShift);
+    return copy;
+  }
+
   Kind getKind() const { return Kind(Value & KindMask); }
 
   /// Is the method marked 'dynamic'?
@@ -329,6 +371,12 @@ public:
   ///
   /// Note that 'init' is not considered an instance member.
   bool isInstance() const { return Value & IsInstanceMask; }
+
+  bool isAsync() const { return Value & IsAsyncMask; }
+
+  uint16_t getExtraDiscriminator() const {
+    return (Value >> ExtraDiscriminatorShift);
+  }
 
   int_type getIntValue() const { return Value; }
 };
@@ -385,20 +433,6 @@ enum class SpecialProtocol: uint8_t {
   None = 0,
   /// The Error protocol.
   Error = 1,
-};
-
-/// Identifiers for protocol method dispatch strategies.
-enum class ProtocolDispatchStrategy: uint8_t {
-  /// Uses ObjC method dispatch.
-  ///
-  /// This must be 0 for ABI compatibility with Objective-C protocol_t records.
-  ObjC = 0,
-  
-  /// Uses Swift protocol witness table dispatch.
-  ///
-  /// To invoke methods of this protocol, a pointer to a protocol witness table
-  /// corresponding to the protocol conformance must be available.
-  Swift = 1,
 };
 
 /// Flags for protocol descriptors.
@@ -463,18 +497,7 @@ public:
   
   /// Does the protocol require a witness table for method dispatch?
   bool needsWitnessTable() const {
-    return needsWitnessTable(getDispatchStrategy());
-  }
-  
-  static bool needsWitnessTable(ProtocolDispatchStrategy strategy) {
-    switch (strategy) {
-    case ProtocolDispatchStrategy::ObjC:
-      return false;
-    case ProtocolDispatchStrategy::Swift:
-      return true;
-    }
-
-    swift_runtime_unreachable("Unhandled ProtocolDispatchStrategy in switch.");
+    return swift::protocolRequiresWitnessTable(getDispatchStrategy());
   }
   
   /// Return the identifier if this is a special runtime-known protocol.
@@ -516,6 +539,9 @@ private:
   enum : int_type {
     KindMask = 0x0F,                // 16 kinds should be enough for anybody
     IsInstanceMask = 0x10,
+    IsAsyncMask = 0x20,
+    ExtraDiscriminatorShift = 16,
+    ExtraDiscriminatorMask = 0xFFFF0000,
   };
 
   int_type Value;
@@ -533,12 +559,38 @@ public:
     return copy;
   }
 
+  ProtocolRequirementFlags withIsAsync(bool isAsync) const {
+    auto copy = *this;
+    if (isAsync)
+      copy.Value |= IsAsyncMask;
+    else
+      copy.Value &= ~IsAsyncMask;
+    return copy;
+  }
+
+  ProtocolRequirementFlags withExtraDiscriminator(uint16_t value) const {
+    auto copy = *this;
+    copy.Value = (copy.Value & ~ExtraDiscriminatorMask)
+               | (int_type(value) << ExtraDiscriminatorShift);
+    return copy;
+  }
+
   Kind getKind() const { return Kind(Value & KindMask); }
 
   /// Is the method an instance member?
   ///
   /// Note that 'init' is not considered an instance member.
   bool isInstance() const { return Value & IsInstanceMask; }
+
+  bool isAsync() const { return Value & IsAsyncMask; }
+
+  bool isSignedWithAddress() const {
+    return getKind() != Kind::BaseProtocol;
+  }
+
+  uint16_t getExtraDiscriminator() const {
+    return (Value >> ExtraDiscriminatorShift);
+  }
 
   int_type getIntValue() const { return Value; }
 
@@ -672,7 +724,7 @@ public:
 private:
   enum : int_type {
     NumWitnessTablesMask  = 0x00FFFFFFU,
-    ClassConstraintMask   = 0x80000000U,
+    ClassConstraintMask   = 0x80000000U, // Warning: Set if NOT class-constrained!
     HasSuperclassMask     = 0x40000000U,
     SpecialProtocolMask   = 0x3F000000U,
     SpecialProtocolShift  = 24U,
@@ -733,6 +785,32 @@ enum class FunctionMetadataConvention: uint8_t {
   CFunctionPointer = 3,
 };
 
+/// Differentiability kind for function type metadata.
+/// Duplicates `DifferentiabilityKind` in AST/AutoDiff.h.
+template <typename int_type>
+struct TargetFunctionMetadataDifferentiabilityKind {
+  enum Value : int_type {
+    NonDifferentiable = 0,
+    Forward           = 1,
+    Reverse           = 2,
+    Normal            = 3,
+    Linear            = 4,
+  } Value;
+
+  constexpr TargetFunctionMetadataDifferentiabilityKind(
+      enum Value value = NonDifferentiable) : Value(value) {}
+
+  int_type getIntValue() const {
+    return (int_type)Value;
+  }
+
+  bool isDifferentiable() const {
+    return Value != NonDifferentiable;
+  }
+};
+using FunctionMetadataDifferentiabilityKind =
+    TargetFunctionMetadataDifferentiabilityKind<size_t>;
+
 /// Flags in a function type metadata record.
 template <typename int_type>
 class TargetFunctionTypeFlags {
@@ -740,12 +818,15 @@ class TargetFunctionTypeFlags {
   // one of the flag bits could be used to identify that the rest of
   // the flags is going to be stored somewhere else in the metadata.
   enum : int_type {
-    NumParametersMask = 0x0000FFFFU,
-    ConventionMask    = 0x00FF0000U,
-    ConventionShift   = 16U,
-    ThrowsMask        = 0x01000000U,
-    ParamFlagsMask    = 0x02000000U,
-    EscapingMask      = 0x04000000U,
+    NumParametersMask      = 0x0000FFFFU,
+    ConventionMask         = 0x00FF0000U,
+    ConventionShift        = 16U,
+    ThrowsMask             = 0x01000000U,
+    ParamFlagsMask         = 0x02000000U,
+    EscapingMask           = 0x04000000U,
+    DifferentiableMask     = 0x08000000U,
+    AsyncMask              = 0x20000000U,
+    SendableMask           = 0x40000000U,
   };
   int_type Data;
   
@@ -763,11 +844,23 @@ public:
     return TargetFunctionTypeFlags((Data & ~ConventionMask)
                              | (int_type(c) << ConventionShift));
   }
-  
+
+  constexpr TargetFunctionTypeFlags<int_type>
+  withAsync(bool async) const {
+    return TargetFunctionTypeFlags<int_type>((Data & ~AsyncMask) |
+                                             (async ? AsyncMask : 0));
+  }
+
   constexpr TargetFunctionTypeFlags<int_type>
   withThrows(bool throws) const {
     return TargetFunctionTypeFlags<int_type>((Data & ~ThrowsMask) |
                                              (throws ? ThrowsMask : 0));
+  }
+
+  constexpr TargetFunctionTypeFlags<int_type>
+  withDifferentiable(bool differentiable) const {
+    return TargetFunctionTypeFlags<int_type>((Data & ~DifferentiableMask) |
+                                     (differentiable ? DifferentiableMask : 0));
   }
 
   constexpr TargetFunctionTypeFlags<int_type>
@@ -782,21 +875,36 @@ public:
                                              (isEscaping ? EscapingMask : 0));
   }
 
+  constexpr TargetFunctionTypeFlags<int_type>
+  withConcurrent(bool isSendable) const {
+    return TargetFunctionTypeFlags<int_type>(
+        (Data & ~SendableMask) |
+        (isSendable ? SendableMask : 0));
+  }
+
   unsigned getNumParameters() const { return Data & NumParametersMask; }
 
   FunctionMetadataConvention getConvention() const {
     return FunctionMetadataConvention((Data&ConventionMask) >> ConventionShift);
   }
-  
-  bool throws() const {
-    return bool(Data & ThrowsMask);
-  }
+
+  bool isAsync() const { return bool(Data & AsyncMask); }
+
+  bool isThrowing() const { return bool(Data & ThrowsMask); }
 
   bool isEscaping() const {
     return bool (Data & EscapingMask);
   }
 
+  bool isSendable() const {
+    return bool (Data & SendableMask);
+  }
+
   bool hasParameterFlags() const { return bool(Data & ParamFlagsMask); }
+
+  bool isDifferentiable() const {
+    return bool (Data & DifferentiableMask);
+  }
 
   int_type getIntValue() const {
     return Data;
@@ -818,9 +926,10 @@ using FunctionTypeFlags = TargetFunctionTypeFlags<size_t>;
 template <typename int_type>
 class TargetParameterTypeFlags {
   enum : int_type {
-    ValueOwnershipMask = 0x7F,
-    VariadicMask       = 0x80,
-    AutoClosureMask    = 0x100,
+    ValueOwnershipMask    = 0x7F,
+    VariadicMask          = 0x80,
+    AutoClosureMask       = 0x100,
+    NoDerivativeMask      = 0x200
   };
   int_type Data;
 
@@ -847,9 +956,16 @@ public:
         (Data & ~AutoClosureMask) | (isAutoClosure ? AutoClosureMask : 0));
   }
 
+  constexpr TargetParameterTypeFlags<int_type>
+  withNoDerivative(bool isNoDerivative) const {
+    return TargetParameterTypeFlags<int_type>(
+        (Data & ~NoDerivativeMask) | (isNoDerivative ? NoDerivativeMask : 0));
+  }
+
   bool isNone() const { return Data == 0; }
   bool isVariadic() const { return Data & VariadicMask; }
   bool isAutoClosure() const { return Data & AutoClosureMask; }
+  bool isNoDerivative() const { return Data & NoDerivativeMask; }
 
   ValueOwnership getValueOwnership() const {
     return (ValueOwnership)(Data & ValueOwnershipMask);
@@ -1029,6 +1145,93 @@ static inline bool isValueWitnessTableMutable(EnumLayoutFlags flags) {
   return uintptr_t(flags) & uintptr_t(EnumLayoutFlags::IsVWTMutable);
 }
 
+namespace SpecialPointerAuthDiscriminators {
+  // All of these values are the stable string hash of the corresponding
+  // variable name:
+  //   (computeStableStringHash % 65535 + 1)
+
+  /// HeapMetadataHeader::destroy
+  const uint16_t HeapDestructor = 0xbbbf;
+
+  /// Type descriptor data pointers.
+  const uint16_t TypeDescriptor = 0xae86;
+
+  /// Runtime function variables exported by the runtime.
+  const uint16_t RuntimeFunctionEntry = 0x625b;
+
+  /// Protocol conformance descriptors.
+  const uint16_t ProtocolConformanceDescriptor = 0xc6eb;
+
+  /// Value witness functions.
+  const uint16_t InitializeBufferWithCopyOfBuffer = 0xda4a;
+  const uint16_t Destroy = 0x04f8;
+  const uint16_t InitializeWithCopy = 0xe3ba;
+  const uint16_t AssignWithCopy = 0x8751;
+  const uint16_t InitializeWithTake = 0x48d8;
+  const uint16_t AssignWithTake = 0xefda;
+  const uint16_t DestroyArray = 0x2398;
+  const uint16_t InitializeArrayWithCopy = 0xa05c;
+  const uint16_t InitializeArrayWithTakeFrontToBack = 0x1c3e;
+  const uint16_t InitializeArrayWithTakeBackToFront = 0x8dd3;
+  const uint16_t StoreExtraInhabitant = 0x79c5;
+  const uint16_t GetExtraInhabitantIndex = 0x2ca8;
+  const uint16_t GetEnumTag = 0xa3b5;
+  const uint16_t DestructiveProjectEnumData = 0x041d;
+  const uint16_t DestructiveInjectEnumTag = 0xb2e4;
+  const uint16_t GetEnumTagSinglePayload = 0x60f0;
+  const uint16_t StoreEnumTagSinglePayload = 0xa0d1;
+
+  /// KeyPath metadata functions.
+  const uint16_t KeyPathDestroy = _SwiftKeyPath_ptrauth_ArgumentDestroy;
+  const uint16_t KeyPathCopy = _SwiftKeyPath_ptrauth_ArgumentCopy;
+  const uint16_t KeyPathEquals = _SwiftKeyPath_ptrauth_ArgumentEquals;
+  const uint16_t KeyPathHash = _SwiftKeyPath_ptrauth_ArgumentHash;
+  const uint16_t KeyPathGetter = _SwiftKeyPath_ptrauth_Getter;
+  const uint16_t KeyPathNonmutatingSetter = _SwiftKeyPath_ptrauth_NonmutatingSetter;
+  const uint16_t KeyPathMutatingSetter = _SwiftKeyPath_ptrauth_MutatingSetter;
+  const uint16_t KeyPathGetLayout = _SwiftKeyPath_ptrauth_ArgumentLayout;
+  const uint16_t KeyPathInitializer = _SwiftKeyPath_ptrauth_ArgumentInit;
+  const uint16_t KeyPathMetadataAccessor = _SwiftKeyPath_ptrauth_MetadataAccessor;
+
+  /// ObjC bridging entry points.
+  const uint16_t ObjectiveCTypeDiscriminator = 0x31c3; // = 12739
+  const uint16_t bridgeToObjectiveCDiscriminator = 0xbca0; // = 48288
+  const uint16_t forceBridgeFromObjectiveCDiscriminator = 0x22fb; // = 8955
+  const uint16_t conditionallyBridgeFromObjectiveCDiscriminator = 0x9a9b; // = 39579
+
+  /// Dynamic replacement pointers.
+  const uint16_t DynamicReplacementScope = 0x48F0; // = 18672
+  const uint16_t DynamicReplacementKey = 0x2C7D; // = 11389
+
+  /// Resume functions for yield-once coroutines that yield a single
+  /// opaque borrowed/inout value.  These aren't actually hard-coded, but
+  /// they're important enough to be worth writing in one place.
+  const uint16_t OpaqueReadResumeFunction = 56769;
+  const uint16_t OpaqueModifyResumeFunction = 3909;
+
+  /// Resilient class stub initializer callback
+  const uint16_t ResilientClassStubInitCallback = 0xC671;
+
+  /// Jobs, tasks, and continuations.
+  const uint16_t JobInvokeFunction = 0xcc64; // = 52324
+  const uint16_t TaskResumeFunction = 0x2c42; // = 11330
+  const uint16_t TaskResumeContext = 0x753a; // = 30010
+  const uint16_t AsyncRunAndBlockFunction = 0x0f08; // 3848
+  const uint16_t AsyncContextParent = 0xbda2; // = 48546
+  const uint16_t AsyncContextResume = 0xd707; // = 55047
+  const uint16_t AsyncContextYield = 0xe207; // = 57863
+  const uint16_t CancellationNotificationFunction = 0x1933; // = 6451
+  const uint16_t EscalationNotificationFunction = 0x5be4; // = 23524
+  const uint16_t AsyncThinNullaryFunction = 0x0f08; // = 3848
+  const uint16_t AsyncFutureFunction = 0x720f; // = 29199
+
+  /// Swift async context parameter stored in the extended frame info.
+  const uint16_t SwiftAsyncContextExtendedFrameEntry = 0xc31a; // = 49946
+
+  /// Dispatch integration.
+  const uint16_t DispatchInvokeFunction = 0xf493; // = 62611
+}
+
 /// The number of arguments that will be passed directly to a generic
 /// nominal type access function. The remaining arguments (if any) will be
 /// passed as an array. That array has enough storage for all of the arguments,
@@ -1176,7 +1379,19 @@ class TypeContextDescriptorFlags : public FlagSet<uint16_t> {
     /// Meaningful for all type-descriptor kinds.
     HasImportInfo = 2,
 
+    /// Set if the type descriptor has a pointer to a list of canonical 
+    /// prespecializations.
+    HasCanonicalMetadataPrespecializations = 3,
+
     // Type-specific flags:
+
+    /// Set if the class is a default actor class.  Note that this is
+    /// based on the best knowledge available to the class; actor
+    /// classes with resilient superclassess might be default actors
+    /// without knowing it.
+    ///
+    /// Only meaningful for class descriptors.
+    Class_IsDefaultActor = 8,
 
     /// The kind of reference that this class makes to its resilient superclass
     /// descriptor.  A TypeReferenceKind.
@@ -1243,6 +1458,8 @@ public:
 
   FLAGSET_DEFINE_FLAG_ACCESSORS(HasImportInfo, hasImportInfo, setHasImportInfo)
 
+  FLAGSET_DEFINE_FLAG_ACCESSORS(HasCanonicalMetadataPrespecializations, hasCanonicalMetadataPrespecializations, setHasCanonicalMetadataPrespecializations)
+
   FLAGSET_DEFINE_FLAG_ACCESSORS(Class_HasVTable,
                                 class_hasVTable,
                                 class_setHasVTable)
@@ -1255,6 +1472,9 @@ public:
   FLAGSET_DEFINE_FLAG_ACCESSORS(Class_AreImmediateMembersNegative,
                                 class_areImmediateMembersNegative,
                                 class_setAreImmediateMembersNegative)
+  FLAGSET_DEFINE_FLAG_ACCESSORS(Class_IsDefaultActor,
+                                class_isDefaultActor,
+                                class_setIsDefaultActor)
 
   FLAGSET_DEFINE_FIELD_ACCESSORS(Class_ResilientSuperclassReferenceKind,
                                  Class_ResilientSuperclassReferenceKind_width,
@@ -1511,6 +1731,10 @@ class GenericMetadataPatternFlags : public FlagSet<uint32_t> {
     /// Does this pattern have an extra-data pattern?
     HasExtraDataPattern = 0,
 
+    /// Do instances of this pattern have a bitset of flags that occur at the
+    /// end of the metadata, after the extra data if there is any?
+    HasTrailingFlags = 1,
+
     // Class-specific flags.
 
     /// Does this pattern have an immediate-members pattern?
@@ -1534,6 +1758,10 @@ public:
   FLAGSET_DEFINE_FLAG_ACCESSORS(HasExtraDataPattern,
                                 hasExtraDataPattern,
                                 setHasExtraDataPattern)
+
+  FLAGSET_DEFINE_FLAG_ACCESSORS(HasTrailingFlags,
+                                hasTrailingFlags,
+                                setHasTrailingFlags)
 
   FLAGSET_DEFINE_FIELD_ACCESSORS(Value_MetadataKind,
                                  Value_MetadataKind_width,
@@ -1667,6 +1895,30 @@ public:
   }
 };
 
+struct MetadataTrailingFlags : public FlagSet<uint64_t> {
+  enum {
+    /// Whether this metadata is a specialization of a generic metadata pattern
+    /// which was created during compilation.
+    IsStaticSpecialization = 0,
+
+    /// Whether this metadata is a specialization of a generic metadata pattern
+    /// which was created during compilation and made to be canonical by
+    /// modifying the metadata accessor.
+    IsCanonicalStaticSpecialization = 1,
+  };
+
+  explicit MetadataTrailingFlags(uint64_t bits) : FlagSet(bits) {}
+  constexpr MetadataTrailingFlags() {}
+
+  FLAGSET_DEFINE_FLAG_ACCESSORS(IsStaticSpecialization,
+                                isStaticSpecialization,
+                                setIsStaticSpecialization)
+
+  FLAGSET_DEFINE_FLAG_ACCESSORS(IsCanonicalStaticSpecialization,
+                                isCanonicalStaticSpecialization,
+                                setIsCanonicalStaticSpecialization)
+};
+
 /// Flags for Builtin.IntegerLiteral values.
 class IntegerLiteralFlags {
 public:
@@ -1699,6 +1951,244 @@ public:
   static IntegerLiteralFlags getFromOpaqueValue(size_t value) {
     return IntegerLiteralFlags(value);
   }
+};
+
+/// Kinds of schedulable job.s
+enum class JobKind : size_t {
+  // There are 256 possible job kinds.
+
+  /// An AsyncTask.
+  Task = 0,
+
+  /// Job kinds >= 192 are private to the implementation.
+  First_Reserved = 192,
+
+  DefaultActorInline = First_Reserved,
+  DefaultActorSeparate,
+  DefaultActorOverride
+};
+
+/// The priority of a job.  Higher priorities are larger values.
+enum class JobPriority : size_t {
+  // This is modelled off of Dispatch.QoS, and the values are directly
+  // stolen from there.
+  UserInteractive = 0x21,
+  UserInitiated   = 0x19,
+  Default         = 0x15,
+  Utility         = 0x11,
+  Background      = 0x09,
+  Unspecified     = 0x00,
+};
+
+/// Flags for schedulable jobs.
+class JobFlags : public FlagSet<size_t> {
+public:
+  enum {
+    Kind           = 0,
+    Kind_width     = 8,
+
+    Priority       = 8,
+    Priority_width = 8,
+
+    // 8 bits reserved for more generic job flags.
+
+    // Kind-specific flags.
+
+    Task_IsChildTask      = 24,
+    Task_IsFuture         = 25,
+    Task_IsGroupChildTask = 26,
+  };
+
+  explicit JobFlags(size_t bits) : FlagSet(bits) {}
+  JobFlags(JobKind kind) { setKind(kind); }
+  JobFlags(JobKind kind, JobPriority priority) {
+    setKind(kind);
+    setPriority(priority);
+  }
+  constexpr JobFlags() {}
+
+  FLAGSET_DEFINE_FIELD_ACCESSORS(Kind, Kind_width, JobKind,
+                                 getKind, setKind)
+
+  FLAGSET_DEFINE_FIELD_ACCESSORS(Priority, Priority_width, JobPriority,
+                                 getPriority, setPriority)
+
+  bool isAsyncTask() const {
+    return getKind() == JobKind::Task;
+  }
+
+  FLAGSET_DEFINE_FLAG_ACCESSORS(Task_IsChildTask,
+                                task_isChildTask,
+                                task_setIsChildTask)
+  FLAGSET_DEFINE_FLAG_ACCESSORS(Task_IsFuture,
+                                task_isFuture,
+                                task_setIsFuture)
+  FLAGSET_DEFINE_FLAG_ACCESSORS(Task_IsGroupChildTask,
+                                task_isGroupChildTask,
+                                task_setIsGroupChildTask)
+};
+
+/// Kinds of task status record.
+enum class TaskStatusRecordKind : uint8_t {
+  /// A DeadlineStatusRecord, which represents an active deadline.
+  Deadline = 0,
+
+  /// A ChildTaskStatusRecord, which represents the potential for
+  /// active child tasks.
+  ChildTask = 1,
+
+  /// A TaskGroupTaskStatusRecord, which represents a task group
+  /// and child tasks spawned within it.
+  TaskGroup = 2,
+
+  /// A CancellationNotificationStatusRecord, which represents the
+  /// need to call a custom function when the task is cancelled.
+  CancellationNotification = 3,
+
+  /// An EscalationNotificationStatusRecord, which represents the
+  /// need to call a custom function when the task's priority is
+  /// escalated.
+  EscalationNotification = 4,
+
+  // Kinds >= 192 are private to the implementation.
+  First_Reserved = 192,
+  Private_RecordLock = 192
+};
+
+/// Flags for cancellation records.
+class TaskStatusRecordFlags : public FlagSet<size_t> {
+public:
+  enum {
+    Kind           = 0,
+    Kind_width     = 8,
+  };
+
+  explicit TaskStatusRecordFlags(size_t bits) : FlagSet(bits) {}
+  constexpr TaskStatusRecordFlags() {}
+  TaskStatusRecordFlags(TaskStatusRecordKind kind) {
+    setKind(kind);
+  }
+
+  FLAGSET_DEFINE_FIELD_ACCESSORS(Kind, Kind_width, TaskStatusRecordKind,
+                                 getKind, setKind)
+};
+
+/// Kinds of async context.
+enum class AsyncContextKind {
+  /// An ordinary asynchronous function.
+  Ordinary         = 0,
+
+  /// A context which can yield to its caller.
+  Yielding         = 1,
+
+  /// A continuation context.
+  Continuation     = 2,
+
+  // Other kinds are reserved for interesting special
+  // intermediate contexts.
+
+  // Kinds >= 192 are private to the implementation.
+  First_Reserved = 192
+};
+
+/// Flags for async contexts.
+class AsyncContextFlags : public FlagSet<uint32_t> {
+public:
+  enum {
+    Kind                = 0,
+    Kind_width          = 8,
+
+    CanThrow            = 8,
+    ShouldNotDeallocate = 9
+  };
+
+  explicit AsyncContextFlags(uint32_t bits) : FlagSet(bits) {}
+  constexpr AsyncContextFlags() {}
+  AsyncContextFlags(AsyncContextKind kind) {
+    setKind(kind);
+  }
+
+  /// The kind of context this represents.
+  FLAGSET_DEFINE_FIELD_ACCESSORS(Kind, Kind_width, AsyncContextKind,
+                                 getKind, setKind)
+
+  /// Whether this context is permitted to throw.
+  FLAGSET_DEFINE_FLAG_ACCESSORS(CanThrow, canThrow, setCanThrow)
+
+  /// Whether a function should avoid deallocating its context before
+  /// returning.  It should still pass its caller's context to its
+  /// return continuation.
+  ///
+  /// This flag can be set in the caller to optimize context allocation,
+  /// e.g. if the callee's context size is known statically and simply
+  /// allocated as part of the caller's context, or if the callee will
+  /// be called multiple times.
+  FLAGSET_DEFINE_FLAG_ACCESSORS(ShouldNotDeallocate,
+                                shouldNotDeallocateInCallee,
+                                setShouldNotDeallocateInCallee)
+};
+
+/// Flags passed to swift_continuation_init.
+class AsyncContinuationFlags : public FlagSet<size_t> {
+public:
+  enum {
+    CanThrow            = 0,
+    HasExecutorOverride = 1,
+    IsPreawaited        = 2,
+  };
+
+  explicit AsyncContinuationFlags(size_t bits) : FlagSet(bits) {}
+  constexpr AsyncContinuationFlags() {}
+
+  /// Whether the continuation is permitted to throw.
+  FLAGSET_DEFINE_FLAG_ACCESSORS(CanThrow, canThrow, setCanThrow)
+
+  /// Whether the continuation should be resumed on a different
+  /// executor than the current one.  swift_continuation_init
+  /// will not initialize ResumeToExecutor if this is set.
+  FLAGSET_DEFINE_FLAG_ACCESSORS(HasExecutorOverride,
+                                hasExecutorOverride,
+                                setHasExecutorOverride)
+
+  /// Whether the continuation is "pre-awaited".  If so, it should
+  /// be set up in the already-awaited state, and so resumptions
+  /// will immediately schedule the continuation to begin
+  /// asynchronously.
+  FLAGSET_DEFINE_FLAG_ACCESSORS(IsPreawaited,
+                                isPreawaited,
+                                setIsPreawaited)
+};
+
+/// Status values for a continuation.  Note that the "not yet"s in
+/// the description below aren't quite right because the system
+/// does not actually promise to update the status before scheduling
+/// the task.  This is because the continuation context is immediately
+/// invalidated once the task starts running again, so the window in
+/// which we can usefully protect against (say) double-resumption may
+/// be very small.
+enum class ContinuationStatus : size_t {
+  /// The continuation has not yet been awaited or resumed.
+  Pending = 0,
+
+  /// The continuation has already been awaited, but not yet resumed.
+  Awaited = 1,
+
+  /// The continuation has already been resumed, but not yet awaited.
+  Resumed = 2
+};
+
+/// Flags describing the executor implementation that are stored
+/// in the ExecutorRef.
+enum class ExecutorRefFlags : size_t {
+  // The number of bits available here is very limited because it's
+  // potentially just the alignment bits of a protocol witness table
+  // pointer
+
+  /// The executor is a default actor.
+  DefaultActor = 0x1,
+
+  /// TODO: remove this
+  MainActorIdentity = 0x2,
 };
 
 } // end namespace swift

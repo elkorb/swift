@@ -968,6 +968,10 @@ keyPath.test("key path literal closures") {
   // Did we compute the indices once per closure construction, or once per
   // closure application?
   expectEqual(2, callsToComputeIndex)
+
+  // rdar://problem/59445486
+  let variadicFn: (String...) -> Int = \.count
+  expectEqual(3, variadicFn("a", "b", "c"))
 }
 
 // SR-6096
@@ -1022,6 +1026,31 @@ keyPath.test("nested generics") {
 keyPath.test("tail allocated c array") {
   let offset = MemoryLayout<foo>.offset(of: \foo.tailallocatedarray)!
   expectEqual(4, offset)
+}
+
+keyPath.test("ReferenceWritableKeyPath statically typed as WritableKeyPath") {
+  let inner = C<Int>(x: 42, y: nil, z: 43)
+  var outer = C<C<Int>>(x: 44, y: nil, z: inner)
+  let keyPath = \C<C<Int>>.z.x
+  let upcastKeyPath = keyPath as WritableKeyPath
+
+  expectEqual(outer[keyPath: keyPath], 42)
+  outer[keyPath: keyPath] = 43
+  expectEqual(outer[keyPath: keyPath], 43)
+
+  expectEqual(outer[keyPath: upcastKeyPath], 43)
+  outer[keyPath: upcastKeyPath] = 44
+  expectEqual(outer[keyPath: upcastKeyPath], 44)
+
+  func setWithInout<T>(_ lhs: inout T, _ rhs: T) { lhs = rhs }
+
+  expectEqual(outer[keyPath: keyPath], 44)
+  setWithInout(&outer[keyPath: keyPath], 45);
+  expectEqual(outer[keyPath: keyPath], 45)
+
+  expectEqual(outer[keyPath: upcastKeyPath], 45)
+  setWithInout(&outer[keyPath: upcastKeyPath], 46)
+  expectEqual(outer[keyPath: upcastKeyPath], 46)
 }
 
 runAllTests()

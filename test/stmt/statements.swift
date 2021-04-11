@@ -15,6 +15,7 @@ func invalid_semi() {
 
 func nested1(_ x: Int) {
   var y : Int
+  // expected-warning@-1 {{variable 'y' was never mutated; consider changing to 'let' constant}}
   
   func nested2(_ z: Int) -> Int {
     return x+y+z
@@ -59,7 +60,7 @@ func funcdecl5(_ a: Int, y: Int) {
   }
 
   // This diagnostic is terrible - rdar://12939553
-  if x {}   // expected-error {{cannot convert value of type 'Int' to expected condition type 'Bool'}}
+  if x {}   // expected-error {{type 'Int' cannot be used as a boolean; test for '!= 0' instead}}
 
   if true {
     if (B) {
@@ -252,6 +253,11 @@ func DoWhileStmt2() {
   }
 }
 
+func LabeledDoStmt() {
+  LABEL: { // expected-error {{labeled block needs 'do'}} {{10-10=do }}
+  }
+}
+
 //===--- Repeat-while statement.
 
 func RepeatWhileStmt1() {
@@ -274,7 +280,7 @@ func RepeatWhileStmt4() {
 
 func brokenSwitch(_ x: Int) -> Int {
   switch x {
-  case .Blah(var rep): // expected-error{{pattern cannot match values of type 'Int'}}
+  case .Blah(var rep): // expected-error{{type 'Int' has no member 'Blah'}}
     return rep
   }
 }
@@ -351,74 +357,6 @@ func testMyEnumWithCaseLabels(_ a : MyEnumWithCaseLabels) {
 }
 
 
-
-// "defer"
-
-func test_defer(_ a : Int) {
-  
-  defer { VoidReturn1() }
-  defer { breakContinue(1)+42 } // expected-warning {{result of operator '+' is unused}}
-  
-  // Ok:
-  defer { while false { break } }
-
-  // Not ok.
-  while false { defer { break } }   // expected-error {{'break' cannot transfer control out of a defer statement}}
-  // expected-warning@-1 {{'defer' statement at end of scope always executes immediately}}{{17-22=do}}
-  defer { return }  // expected-error {{'return' cannot transfer control out of a defer statement}}
-  // expected-warning@-1 {{'defer' statement at end of scope always executes immediately}}{{3-8=do}}
-}
-
-class SomeTestClass {
-  var x = 42
- 
-  func method() {
-    defer { x = 97 }  // self. not required here!
-    // expected-warning@-1 {{'defer' statement at end of scope always executes immediately}}{{5-10=do}}
-  }
-}
-
-enum DeferThrowError: Error {
-  case someError
-}
-
-func throwInDefer() {
-  defer { throw DeferThrowError.someError } // expected-error {{'throw' cannot transfer control out of a defer statement}}
-  print("Foo")
-}
-
-func throwingFuncInDefer1() throws {
-  defer { try throwingFunctionCalledInDefer() } // expected-error {{errors cannot be thrown out of a defer body}}
-  print("Bar")
-}
-
-func throwingFuncInDefer2() throws {
-  defer { throwingFunctionCalledInDefer() } // expected-error {{errors cannot be thrown out of a defer body}}
-  print("Bar")
-}
-
-func throwingFuncInDefer3() {
-  defer { try throwingFunctionCalledInDefer() } // expected-error {{errors cannot be thrown out of a defer body}}
-  print("Bar")
-}
-
-func throwingFuncInDefer4() {
-  defer { throwingFunctionCalledInDefer() } // expected-error {{errors cannot be thrown out of a defer body}}
-  print("Bar")
-}
-
-func throwingFunctionCalledInDefer() throws {
-  throw DeferThrowError.someError
-}
-
-class SomeDerivedClass: SomeTestClass {
-  override init() {
-    defer {
-      super.init() // expected-error {{initializer chaining ('super.init') cannot be nested in another expression}}
-    }
-  }
-}
-
 func test_guard(_ x : Int, y : Int??, cond : Bool) {
   
   // These are all ok.
@@ -433,8 +371,9 @@ func test_guard(_ x : Int, y : Int??, cond : Bool) {
   guard let e, cond else {}    // expected-error {{variable binding in a condition requires an initializer}}
   guard case let f? : Int?, cond else {}    // expected-error {{variable binding in a condition requires an initializer}}
 
+  // FIXME: Bring back the tailored diagnostic
   guard let g = y else {
-    markUsed(g)  // expected-error {{variable declared in 'guard' condition is not usable in its body}}
+    markUsed(g)  // expected-error {{cannot find 'g' in scope}}
   }
 
   guard let h = y, cond {}  // expected-error {{expected 'else' after 'guard' condition}} {{25-25=else }}
@@ -444,8 +383,9 @@ func test_guard(_ x : Int, y : Int??, cond : Bool) {
 
   // SR-7567
   guard let outer = y else {
+    // FIXME: Bring back the tailored diagnostic
     guard true else {
-      print(outer) // expected-error {{variable declared in 'guard' condition is not usable in its body}}
+      print(outer) // expected-error {{cannot find 'outer' in scope}}
     }
   }
 }
@@ -487,8 +427,8 @@ func testThrowNil() throws {
 // Even if the condition fails to typecheck, save it in the AST anyway; the old
 // condition may have contained a SequenceExpr.
 func r23684220(_ b: Any) {
-  if let _ = b ?? b {} // expected-error {{initializer for conditional binding must have Optional type, not 'Any'}}
-  // expected-warning@-1 {{left side of nil coalescing operator '??' has non-optional type 'Any', so the right side is never used}}
+  if let _ = b ?? b {} // expected-warning {{left side of nil coalescing operator '??' has non-optional type 'Any', so the right side is never used}}
+  // expected-error@-1 {{initializer for conditional binding must have Optional type, not 'Any'}}
 }
 
 
@@ -578,7 +518,7 @@ func fn(x: Int) {
 }
 
 func bad_if() {
-  if 1 {} // expected-error {{cannot convert value of type 'Int' to expected condition type 'Bool'}}
+  if 1 {} // expected-error {{type 'Int' cannot be used as a boolean; test for '!= 0' instead}}
   if (x: false) {} // expected-error {{cannot convert value of type '(x: Bool)' to expected condition type 'Bool'}}
   if (x: 1) {} // expected-error {{cannot convert value of type '(x: Int)' to expected condition type 'Bool'}}
   if nil {} // expected-error {{'nil' is not compatible with expected condition type 'Bool'}}
@@ -586,70 +526,70 @@ func bad_if() {
 
 // Typo correction for loop labels
 for _ in [1] {
-  break outerloop // expected-error {{use of unresolved label 'outerloop'}}
-  continue outerloop // expected-error {{use of unresolved label 'outerloop'}}
+  break outerloop // expected-error {{cannot find label 'outerloop' in scope}}
+  continue outerloop // expected-error {{cannot find label 'outerloop' in scope}}
 }
 while true {
-  break outerloop // expected-error {{use of unresolved label 'outerloop'}}
-  continue outerloop // expected-error {{use of unresolved label 'outerloop'}}
+  break outerloop // expected-error {{cannot find label 'outerloop' in scope}}
+  continue outerloop // expected-error {{cannot find label 'outerloop' in scope}}
 }
 repeat {
-  break outerloop // expected-error {{use of unresolved label 'outerloop'}}
-  continue outerloop // expected-error {{use of unresolved label 'outerloop'}}
+  break outerloop // expected-error {{cannot find label 'outerloop' in scope}}
+  continue outerloop // expected-error {{cannot find label 'outerloop' in scope}}
 } while true
 
 outerLoop: for _ in [1] { // expected-note {{'outerLoop' declared here}}
-  break outerloop // expected-error {{use of unresolved label 'outerloop'; did you mean 'outerLoop'?}} {{9-18=outerLoop}}
+  break outerloop // expected-error {{cannot find label 'outerloop' in scope; did you mean 'outerLoop'?}} {{9-18=outerLoop}}
 }
 outerLoop: for _ in [1] { // expected-note {{'outerLoop' declared here}}
-  continue outerloop // expected-error {{use of unresolved label 'outerloop'; did you mean 'outerLoop'?}} {{12-21=outerLoop}}
+  continue outerloop // expected-error {{cannot find label 'outerloop' in scope; did you mean 'outerLoop'?}} {{12-21=outerLoop}}
 }
 outerLoop: while true { // expected-note {{'outerLoop' declared here}}
-  break outerloop // expected-error {{use of unresolved label 'outerloop'; did you mean 'outerLoop'?}} {{9-18=outerLoop}}
+  break outerloop // expected-error {{cannot find label 'outerloop' in scope; did you mean 'outerLoop'?}} {{9-18=outerLoop}}
 }
 outerLoop: while true { // expected-note {{'outerLoop' declared here}}
-  continue outerloop // expected-error {{use of unresolved label 'outerloop'; did you mean 'outerLoop'?}} {{12-21=outerLoop}}
+  continue outerloop // expected-error {{cannot find label 'outerloop' in scope; did you mean 'outerLoop'?}} {{12-21=outerLoop}}
 }
 outerLoop: repeat { // expected-note {{'outerLoop' declared here}}
-  break outerloop // expected-error {{use of unresolved label 'outerloop'; did you mean 'outerLoop'?}} {{9-18=outerLoop}}
+  break outerloop // expected-error {{cannot find label 'outerloop' in scope; did you mean 'outerLoop'?}} {{9-18=outerLoop}}
 } while true
 outerLoop: repeat { // expected-note {{'outerLoop' declared here}}
-  continue outerloop // expected-error {{use of unresolved label 'outerloop'; did you mean 'outerLoop'?}} {{12-21=outerLoop}}
+  continue outerloop // expected-error {{cannot find label 'outerloop' in scope; did you mean 'outerLoop'?}} {{12-21=outerLoop}}
 } while true
 
 outerLoop1: for _ in [1] { // expected-note {{did you mean 'outerLoop1'?}} {{11-20=outerLoop1}}
   outerLoop2: for _ in [1] { // expected-note {{did you mean 'outerLoop2'?}} {{11-20=outerLoop2}}
-    break outerloop // expected-error {{use of unresolved label 'outerloop'}}
+    break outerloop // expected-error {{cannot find label 'outerloop' in scope}}
   }
 }
 outerLoop1: for _ in [1] { // expected-note {{did you mean 'outerLoop1'?}} {{14-23=outerLoop1}}
   outerLoop2: for _ in [1] { // expected-note {{did you mean 'outerLoop2'?}} {{14-23=outerLoop2}}
-    continue outerloop // expected-error {{use of unresolved label 'outerloop'}}
+    continue outerloop // expected-error {{cannot find label 'outerloop' in scope}}
   }
 }
 outerLoop1: while true { // expected-note {{did you mean 'outerLoop1'?}} {{11-20=outerLoop1}}
   outerLoop2: while true { // expected-note {{did you mean 'outerLoop2'?}} {{11-20=outerLoop2}}
-    break outerloop // expected-error {{use of unresolved label 'outerloop'}}
+    break outerloop // expected-error {{cannot find label 'outerloop' in scope}}
   }
 }
 outerLoop1: while true { // expected-note {{did you mean 'outerLoop1'?}} {{14-23=outerLoop1}}
   outerLoop2: while true { // expected-note {{did you mean 'outerLoop2'?}} {{14-23=outerLoop2}}
-    continue outerloop // expected-error {{use of unresolved label 'outerloop'}}
+    continue outerloop // expected-error {{cannot find label 'outerloop' in scope}}
   }
 }
 outerLoop1: repeat { // expected-note {{did you mean 'outerLoop1'?}} {{11-20=outerLoop1}}
   outerLoop2: repeat { // expected-note {{did you mean 'outerLoop2'?}} {{11-20=outerLoop2}}
-    break outerloop // expected-error {{use of unresolved label 'outerloop'}}
+    break outerloop // expected-error {{cannot find label 'outerloop' in scope}}
   } while true
 } while true
 outerLoop1: repeat { // expected-note {{did you mean 'outerLoop1'?}} {{14-23=outerLoop1}}
   outerLoop2: repeat { // expected-note {{did you mean 'outerLoop2'?}} {{14-23=outerLoop2}}
-    continue outerloop // expected-error {{use of unresolved label 'outerloop'}}
+    continue outerloop // expected-error {{cannot find label 'outerloop' in scope}}
   } while true
 } while true
 
 // Errors in case syntax
 class
-case, // expected-error {{expected identifier in enum 'case' declaration}} expected-error {{expected identifier after comma in enum 'case' declaration}}
+case, // expected-error {{expected identifier in enum 'case' declaration}} expected-error {{expected identifier after comma in enum 'case' declaration}} expected-error {{enum 'case' is not allowed outside of an enum}}
 case  // expected-error {{expected identifier in enum 'case' declaration}} expected-error {{enum 'case' is not allowed outside of an enum}}
 // NOTE: EOF is important here to properly test a code path that used to crash the parser

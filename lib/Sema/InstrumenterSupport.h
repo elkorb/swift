@@ -16,7 +16,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "TypeChecker.h"
-
 #include "swift/AST/ASTWalker.h"
 
 namespace swift {
@@ -28,7 +27,8 @@ private:
 
 public:
   Added() {}
-  Added(E NewContents) { Contents = NewContents; }
+  Added(E NewContents) : Contents(NewContents) {}
+  Added(const Added<E> &rhs) : Contents(rhs.Contents) {}
   const Added<E> &operator=(const Added<E> &rhs) {
     Contents = rhs.Contents;
     return *this;

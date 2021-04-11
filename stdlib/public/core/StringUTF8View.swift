@@ -78,7 +78,7 @@ extension String {
   ///
   ///     print(strncmp(s1, s2, 14))
   ///     // Prints "0"
-  ///     print(String(s1.utf8.prefix(14)))
+  ///     print(String(s1.utf8.prefix(14))!)
   ///     // Prints "They call me '"
   ///
   /// Extending the compared character count to 15 includes the differing
@@ -86,10 +86,10 @@ extension String {
   ///
   ///     print(strncmp(s1, s2, 15))
   ///     // Prints "-17"
-  ///     print(String(s1.utf8.prefix(15)))
+  ///     print(String(s1.utf8.prefix(15))!)
   ///     // Prints "They call me 'B"
   @frozen
-  public struct UTF8View {
+  public struct UTF8View: Sendable {
     @usableFromInline
     internal var _guts: _StringGuts
 
@@ -251,13 +251,16 @@ extension String {
   ///     }
   ///     // Prints "6"
   public var utf8CString: ContiguousArray<CChar> {
-    if _fastPath(_guts.isFastUTF8) {
-      var result = _guts.withFastCChar { ContiguousArray($0) }
-      result.append(0)
-      return result
-    }
+    @_effects(readonly) @_semantics("string.getUTF8CString")
+    get {
+      if _fastPath(_guts.isFastUTF8) {
+        var result = _guts.withFastCChar { ContiguousArray($0) }
+        result.append(0)
+        return result
+      }
 
-    return _slowUTF8CString()
+      return _slowUTF8CString()
+    }
   }
 
   @usableFromInline @inline(never) // slow-path

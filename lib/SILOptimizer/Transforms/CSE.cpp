@@ -18,6 +18,8 @@
 #define DEBUG_TYPE "sil-cse"
 #include "swift/SIL/DebugUtils.h"
 #include "swift/SIL/Dominance.h"
+#include "swift/SIL/InstructionUtils.h"
+#include "swift/SIL/OwnershipUtils.h"
 #include "swift/SIL/SILCloner.h"
 #include "swift/SIL/SILModule.h"
 #include "swift/SIL/SILOpenedArchetypesTracker.h"
@@ -30,7 +32,11 @@
 #include "swift/SILOptimizer/Analysis/SimplifyInstruction.h"
 #include "swift/SILOptimizer/PassManager/Passes.h"
 #include "swift/SILOptimizer/PassManager/Transforms.h"
+#include "swift/SILOptimizer/Utils/BasicBlockOptUtils.h"
 #include "swift/SILOptimizer/Utils/InstOptUtils.h"
+#include "swift/SILOptimizer/Utils/OwnershipOptUtils.h"
+#include "swift/SILOptimizer/Utils/SILInliner.h"
+#include "swift/SILOptimizer/Utils/SILOptFunctionBuilder.h"
 #include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopedHashTable.h"
@@ -88,22 +94,34 @@ public:
   }
 
   hash_code visitBridgeObjectToRefInst(BridgeObjectToRefInst *X) {
-    return llvm::hash_combine(X->getKind(), X->getType(), X->getOperand());
+    return llvm::hash_combine(X->getKind(), X->getType(),
+                              lookThroughOwnershipInsts(X->getOperand()));
   }
 
   hash_code visitBridgeObjectToWordInst(BridgeObjectToWordInst *X) {
-    return llvm::hash_combine(X->getKind(), X->getType(), X->getOperand());
+    return llvm::hash_combine(X->getKind(), X->getType(),
+                              lookThroughOwnershipInsts(X->getOperand()));
   }
 
   hash_code visitClassifyBridgeObjectInst(ClassifyBridgeObjectInst *X) {
-    return llvm::hash_combine(X->getKind(), X->getOperand());
+    return llvm::hash_combine(X->getKind(),
+                              lookThroughOwnershipInsts(X->getOperand()));
   }
 
   hash_code visitValueToBridgeObjectInst(ValueToBridgeObjectInst *X) {
-    return llvm::hash_combine(X->getKind(), X->getOperand());
+    return llvm::hash_combine(X->getKind(),
+                              lookThroughOwnershipInsts(X->getOperand()));
   }
 
   hash_code visitRefToBridgeObjectInst(RefToBridgeObjectInst *X) {
+    if (X->getFunction()->hasOwnership()) {
+      auto TransformedOpValues =
+          X->getOperandValues(lookThroughOwnershipInsts, false);
+      return llvm::hash_combine(
+          X->getKind(), X->getType(),
+          llvm::hash_combine_range(TransformedOpValues.begin(),
+                                   TransformedOpValues.end()));
+    }
     OperandValueArrayRef Operands(X->getAllOperands());
     return llvm::hash_combine(
         X->getKind(), X->getType(),
@@ -111,20 +129,22 @@ public:
   }
 
   hash_code visitUncheckedTrivialBitCastInst(UncheckedTrivialBitCastInst *X) {
-    return llvm::hash_combine(X->getKind(), X->getType(), X->getOperand());
+    return llvm::hash_combine(X->getKind(), X->getType(),
+                              lookThroughOwnershipInsts(X->getOperand()));
   }
 
   hash_code visitUncheckedBitwiseCastInst(UncheckedBitwiseCastInst *X) {
-    return llvm::hash_combine(X->getKind(), X->getType(), X->getOperand());
+    return llvm::hash_combine(X->getKind(), X->getType(),
+                              lookThroughOwnershipInsts(X->getOperand()));
   }
 
   hash_code visitUncheckedAddrCastInst(UncheckedAddrCastInst *X) {
-    return llvm::hash_combine(X->getKind(), X->getType(), X->getOperand());
+    return llvm::hash_combine(X->getKind(), X->getType(),
+                              lookThroughOwnershipInsts(X->getOperand()));
   }
 
   hash_code visitFunctionRefInst(FunctionRefInst *X) {
-    return llvm::hash_combine(X->getKind(),
-                              X->getInitiallyReferencedFunction());
+    return llvm::hash_combine(X->getKind(), X->getReferencedFunction());
   }
 
   hash_code visitGlobalAddrInst(GlobalAddrInst *X) {
@@ -140,23 +160,29 @@ public:
   }
 
   hash_code visitRefElementAddrInst(RefElementAddrInst *X) {
-    return llvm::hash_combine(X->getKind(), X->getOperand(), X->getField());
+    return llvm::hash_combine(X->getKind(),
+                              lookThroughOwnershipInsts(X->getOperand()),
+                              X->getField());
   }
 
   hash_code visitRefTailAddrInst(RefTailAddrInst *X) {
-    return llvm::hash_combine(X->getKind(), X->getOperand());
+    return llvm::hash_combine(X->getKind(),
+                              lookThroughOwnershipInsts(X->getOperand()));
   }
 
   hash_code visitProjectBoxInst(ProjectBoxInst *X) {
-    return llvm::hash_combine(X->getKind(), X->getOperand());
+    return llvm::hash_combine(X->getKind(),
+                              lookThroughOwnershipInsts(X->getOperand()));
   }
 
   hash_code visitRefToRawPointerInst(RefToRawPointerInst *X) {
-    return llvm::hash_combine(X->getKind(), X->getOperand());
+    return llvm::hash_combine(X->getKind(),
+                              lookThroughOwnershipInsts(X->getOperand()));
   }
 
   hash_code visitRawPointerToRefInst(RawPointerToRefInst *X) {
-    return llvm::hash_combine(X->getKind(), X->getOperand());
+    return llvm::hash_combine(X->getKind(),
+                              lookThroughOwnershipInsts(X->getOperand()));
   }
 
 #define LOADABLE_REF_STORAGE(Name, ...) \
@@ -169,7 +195,8 @@ public:
 #include "swift/AST/ReferenceStorage.def"
 
   hash_code visitUpcastInst(UpcastInst *X) {
-    return llvm::hash_combine(X->getKind(), X->getType(), X->getOperand());
+    return llvm::hash_combine(X->getKind(), X->getType(),
+                              lookThroughOwnershipInsts(X->getOperand()));
   }
 
   hash_code visitStringLiteralInst(StringLiteralInst *X) {
@@ -179,14 +206,23 @@ public:
   hash_code visitStructInst(StructInst *X) {
     // This is safe since we are hashing the operands using the actual pointer
     // values of the values being used by the operand.
+    if (X->getFunction()->hasOwnership()) {
+      auto TransformedOpValues =
+          X->getOperandValues(lookThroughOwnershipInsts, false);
+      return llvm::hash_combine(
+          X->getKind(), X->getStructDecl(),
+          llvm::hash_combine_range(TransformedOpValues.begin(),
+                                   TransformedOpValues.end()));
+    }
     OperandValueArrayRef Operands(X->getAllOperands());
-    return llvm::hash_combine(X->getKind(), X->getStructDecl(),
-      llvm::hash_combine_range(Operands.begin(), Operands.end()));
+    return llvm::hash_combine(
+        X->getKind(), X->getStructDecl(),
+        llvm::hash_combine_range(Operands.begin(), Operands.end()));
   }
 
   hash_code visitStructExtractInst(StructExtractInst *X) {
     return llvm::hash_combine(X->getKind(), X->getStructDecl(), X->getField(),
-                              X->getOperand());
+                              lookThroughOwnershipInsts(X->getOperand()));
   }
 
   hash_code visitStructElementAddrInst(StructElementAddrInst *X) {
@@ -194,36 +230,54 @@ public:
                               X->getOperand());
   }
 
+  hash_code visitDestructureStructInst(DestructureStructInst *X) {
+    return llvm::hash_combine(X->getKind(),
+                              lookThroughOwnershipInsts(X->getOperand()));
+  }
+
   hash_code visitCondFailInst(CondFailInst *X) {
     return llvm::hash_combine(X->getKind(), X->getOperand());
   }
 
   hash_code visitClassMethodInst(ClassMethodInst *X) {
-    return llvm::hash_combine(X->getKind(),
-                              X->getType(),
-                              X->getOperand());
+    return llvm::hash_combine(X->getKind(), X->getType(),
+                              lookThroughOwnershipInsts(X->getOperand()));
   }
 
   hash_code visitSuperMethodInst(SuperMethodInst *X) {
-    return llvm::hash_combine(X->getKind(),
-                              X->getType(),
-                              X->getOperand());
+    return llvm::hash_combine(X->getKind(), X->getType(),
+                              lookThroughOwnershipInsts(X->getOperand()));
   }
 
   hash_code visitTupleInst(TupleInst *X) {
+    if (X->getFunction()->hasOwnership()) {
+      auto TransformedOpValues =
+          X->getOperandValues(lookThroughOwnershipInsts, false);
+      return llvm::hash_combine(
+          X->getKind(), X->getTupleType(),
+          llvm::hash_combine_range(TransformedOpValues.begin(),
+                                   TransformedOpValues.end()));
+    }
     OperandValueArrayRef Operands(X->getAllOperands());
-    return llvm::hash_combine(X->getKind(), X->getTupleType(),
-      llvm::hash_combine_range(Operands.begin(), Operands.end()));
+    return llvm::hash_combine(
+        X->getKind(), X->getTupleType(),
+        llvm::hash_combine_range(Operands.begin(), Operands.end()));
   }
 
   hash_code visitTupleExtractInst(TupleExtractInst *X) {
-    return llvm::hash_combine(X->getKind(), X->getTupleType(), X->getFieldNo(),
-                              X->getOperand());
+    return llvm::hash_combine(X->getKind(), X->getTupleType(),
+                              X->getFieldIndex(),
+                              lookThroughOwnershipInsts(X->getOperand()));
   }
 
   hash_code visitTupleElementAddrInst(TupleElementAddrInst *X) {
-    return llvm::hash_combine(X->getKind(), X->getTupleType(), X->getFieldNo(),
+    return llvm::hash_combine(X->getKind(), X->getTupleType(), X->getFieldIndex(),
                               X->getOperand());
+  }
+
+  hash_code visitDestructureTupleInst(DestructureTupleInst *X) {
+    return llvm::hash_combine(X->getKind(),
+                              lookThroughOwnershipInsts(X->getOperand()));
   }
 
   hash_code visitMetatypeInst(MetatypeInst *X) {
@@ -231,11 +285,19 @@ public:
   }
 
   hash_code visitValueMetatypeInst(ValueMetatypeInst *X) {
-    return llvm::hash_combine(X->getKind(), X->getType(), X->getOperand());
+    return llvm::hash_combine(X->getKind(), X->getType(),
+                              lookThroughOwnershipInsts(X->getOperand()));
   }
 
   hash_code visitExistentialMetatypeInst(ExistentialMetatypeInst *X) {
     return llvm::hash_combine(X->getKind(), X->getType());
+  }
+
+  hash_code visitInitExistentialMetatypeInst(InitExistentialMetatypeInst *X) {
+    return llvm::hash_combine(
+        X->getKind(), X->getType(), X->getOperand(),
+        llvm::hash_combine_range(X->getConformances().begin(),
+                                 X->getConformances().end()));
   }
 
   hash_code visitObjCProtocolInst(ObjCProtocolInst *X) {
@@ -257,31 +319,49 @@ public:
   }
 
   hash_code visitApplyInst(ApplyInst *X) {
+    if (X->getFunction()->hasOwnership()) {
+      auto TransformedOpValues =
+          X->getOperandValues(lookThroughOwnershipInsts, false);
+      return llvm::hash_combine(
+          X->getKind(), X->getCallee(),
+          llvm::hash_combine_range(TransformedOpValues.begin(),
+                                   TransformedOpValues.end()));
+    }
     OperandValueArrayRef Operands(X->getAllOperands());
-    return llvm::hash_combine(X->getKind(), X->getCallee(),
-                              llvm::hash_combine_range(Operands.begin(),
-                                                       Operands.end()),
-                              X->hasSubstitutions());
+    return llvm::hash_combine(
+        X->getKind(), X->getCallee(),
+        llvm::hash_combine_range(Operands.begin(), Operands.end()));
   }
 
   hash_code visitBuiltinInst(BuiltinInst *X) {
+    if (X->getFunction()->hasOwnership()) {
+      auto TransformedOpValues =
+          X->getOperandValues(lookThroughOwnershipInsts, false);
+      return llvm::hash_combine(
+          X->getKind(), X->getName().get(),
+          llvm::hash_combine_range(TransformedOpValues.begin(),
+                                   TransformedOpValues.end()),
+          X->hasSubstitutions());
+    }
     OperandValueArrayRef Operands(X->getAllOperands());
-    return llvm::hash_combine(X->getKind(), X->getName().get(),
-                              llvm::hash_combine_range(Operands.begin(),
-                                                       Operands.end()),
-                              X->hasSubstitutions());
+    return llvm::hash_combine(
+        X->getKind(), X->getName().get(),
+        llvm::hash_combine_range(Operands.begin(), Operands.end()),
+        X->hasSubstitutions());
   }
-  
+
   hash_code visitEnumInst(EnumInst *X) {
     // We hash the enum by hashing its kind, element, and operand if it has one.
     if (!X->hasOperand())
       return llvm::hash_combine(X->getKind(), X->getElement());
-    return llvm::hash_combine(X->getKind(), X->getElement(), X->getOperand());
+    return llvm::hash_combine(X->getKind(), X->getElement(),
+                              lookThroughOwnershipInsts(X->getOperand()));
   }
 
   hash_code visitUncheckedEnumDataInst(UncheckedEnumDataInst *X) {
     // We hash the enum by hashing its kind, element, and operand.
-    return llvm::hash_combine(X->getKind(), X->getElement(), X->getOperand());
+    return llvm::hash_combine(X->getKind(), X->getElement(),
+                              lookThroughOwnershipInsts(X->getOperand()));
   }
 
   hash_code visitIndexAddrInst(IndexAddrInst *X) {
@@ -307,15 +387,15 @@ public:
   }
 
   hash_code visitUncheckedRefCastInst(UncheckedRefCastInst *X) {
-    return llvm::hash_combine(X->getKind(), X->getOperand(), X->getType());
+    return llvm::hash_combine(
+        X->getKind(), lookThroughOwnershipInsts(X->getOperand()), X->getType());
   }
 
   hash_code visitSelectEnumInstBase(SelectEnumInstBase *X) {
-    auto hash = llvm::hash_combine(X->getKind(),
-                                   X->getEnumOperand(),
-                                   X->getType(),
-                                   X->hasDefault());
-    
+    auto hash = llvm::hash_combine(
+        X->getKind(), lookThroughOwnershipInsts(X->getEnumOperand()),
+        X->getType(), X->hasDefault());
+
     for (unsigned i = 0, e = X->getNumCases(); i < e; ++i) {
       hash = llvm::hash_combine(hash, X->getCase(i).first,
                                 X->getCase(i).second);
@@ -337,9 +417,8 @@ public:
 
   hash_code visitSelectValueInst(SelectValueInst *X) {
     auto hash = llvm::hash_combine(X->getKind(),
-                                   X->getOperand(),
-                                   X->getType(),
-                                   X->hasDefault());
+                                   lookThroughOwnershipInsts(X->getOperand()),
+                                   X->getType(), X->hasDefault());
 
     for (unsigned i = 0, e = X->getNumCases(); i < e; ++i) {
       hash = llvm::hash_combine(hash, X->getCase(i).first,
@@ -364,7 +443,7 @@ public:
     OperandValueArrayRef Operands(X->getAllOperands());
     return llvm::hash_combine(X->getKind(),
                               X->getLookupType().getPointer(),
-                              X->getMember().getHashCode(),
+                              X->getMember(),
                               X->getConformance(),
                               X->getType(),
                               !X->getTypeDependentOperands().empty(),
@@ -374,6 +453,14 @@ public:
   }
 
   hash_code visitMarkDependenceInst(MarkDependenceInst *X) {
+    if (X->getFunction()->hasOwnership()) {
+      auto TransformedOpValues =
+          X->getOperandValues(lookThroughOwnershipInsts, false);
+      return llvm::hash_combine(
+          X->getKind(), X->getType(),
+          llvm::hash_combine_range(TransformedOpValues.begin(),
+                                   TransformedOpValues.end()));
+    }
     OperandValueArrayRef Operands(X->getAllOperands());
     return llvm::hash_combine(
         X->getKind(), X->getType(),
@@ -384,7 +471,7 @@ public:
     auto ArchetypeTy = X->getType().castTo<ArchetypeType>();
     auto ConformsTo = ArchetypeTy->getConformsTo();
     return llvm::hash_combine(
-        X->getKind(), X->getOperand(),
+        X->getKind(), lookThroughOwnershipInsts(X->getOperand()),
         llvm::hash_combine_range(ConformsTo.begin(), ConformsTo.end()));
   }
 };
@@ -404,7 +491,9 @@ bool llvm::DenseMapInfo<SimpleValue>::isEqual(SimpleValue LHS,
   auto ROpen = dyn_cast<OpenExistentialRefInst>(RHSI);
   if (LOpen && ROpen) {
     // Check operands.
-    if (LOpen->getOperand() != ROpen->getOperand())
+    auto LOp = LOpen->getOperand();
+    auto ROp = ROpen->getOperand();
+    if (lookThroughOwnershipInsts(LOp) != lookThroughOwnershipInsts(ROp))
       return false;
 
     // Consider the types of two open_existential_ref instructions to be equal,
@@ -418,9 +507,6 @@ bool llvm::DenseMapInfo<SimpleValue>::isEqual(SimpleValue LHS,
       return false;
 
     // ... and other constraints are equal.
-    if (LHSArchetypeTy->requiresClass() != RHSArchetypeTy->requiresClass())
-      return false;
-
     if (LHSArchetypeTy->getSuperclass().getPointer() !=
         RHSArchetypeTy->getSuperclass().getPointer())
       return false;
@@ -431,8 +517,49 @@ bool llvm::DenseMapInfo<SimpleValue>::isEqual(SimpleValue LHS,
 
     return true;
   }
-  return LHSI->getKind() == RHSI->getKind() && LHSI->isIdenticalTo(RHSI);
+  auto opCmp = [&](const SILValue op1, const SILValue op2) -> bool {
+    if (op1 == op2)
+      return true;
+    if (lookThroughOwnershipInsts(op1) == lookThroughOwnershipInsts(op2))
+      return true;
+    return false;
+  };
+  return LHSI->getKind() == RHSI->getKind() && LHSI->isIdenticalTo(RHSI, opCmp);
 }
+
+namespace {
+// A very simple cloner for cloning instructions inside
+// the same function. The only interesting thing it does
+// is remapping the archetypes when it is required.
+class InstructionCloner : public SILCloner<InstructionCloner> {
+  friend class SILCloner<InstructionCloner>;
+  friend class SILInstructionVisitor<InstructionCloner>;
+  SILInstruction *Result = nullptr;
+
+public:
+  InstructionCloner(SILFunction *F) : SILCloner(*F) {}
+
+  static SILInstruction *doIt(SILInstruction *I) {
+    InstructionCloner TC(I->getFunction());
+    return TC.clone(I);
+  }
+
+  SILInstruction *clone(SILInstruction *I) {
+    visit(I);
+    return Result;
+  }
+
+  void postProcess(SILInstruction *Orig, SILInstruction *Cloned) {
+    assert(Orig->getFunction() == &getBuilder().getFunction() &&
+           "cloning between functions is not supported");
+
+    Result = Cloned;
+    SILCloner<InstructionCloner>::postProcess(Orig, Cloned);
+  }
+  SILValue getMappedValue(SILValue Value) { return Value; }
+  SILBasicBlock *remapBasicBlock(SILBasicBlock *BB) { return BB; }
+};
+} // end anonymous namespace
 
 //===----------------------------------------------------------------------===//
 //                               CSE Interface
@@ -444,6 +571,10 @@ namespace swift {
 /// eliminating trivially redundant instructions and using simplifyInstruction
 /// to canonicalize things as it goes. It is intended to be fast and catch
 /// obvious cases so that SILCombine and other passes are more effective.
+///
+/// It also optimizes calls to lazy property getters: If such a call is
+/// dominated by another call to the same getter, it is replaced by a direct
+/// load of the property - assuming that it is already computed.
 class CSE {
 public:
   typedef llvm::ScopedHashTableVal<SimpleValue, ValueBase *> SimpleValueHTType;
@@ -462,11 +593,27 @@ public:
 
   SideEffectAnalysis *SEA;
 
-  CSE(bool RunsOnHighLevelSil, SideEffectAnalysis *SEA)
-      : SEA(SEA), RunsOnHighLevelSil(RunsOnHighLevelSil) {}
+  SILOptFunctionBuilder &FuncBuilder;
+
+  DeadEndBlocks &DeadEndBBs;
+
+  OwnershipFixupContext &RAUWFixupContext;
+
+  /// The set of calls to lazy property getters which can be replace by a direct
+  /// load of the property value.
+  llvm::SmallVector<ApplyInst *, 8> lazyPropertyGetters;
+
+  CSE(bool RunsOnHighLevelSil, SideEffectAnalysis *SEA,
+      SILOptFunctionBuilder &FuncBuilder, DeadEndBlocks &DeadEndBBs,
+      OwnershipFixupContext &RAUWFixupContext)
+      : SEA(SEA), FuncBuilder(FuncBuilder), DeadEndBBs(DeadEndBBs),
+        RAUWFixupContext(RAUWFixupContext),
+        RunsOnHighLevelSil(RunsOnHighLevelSil) {}
 
   bool processFunction(SILFunction &F, DominanceInfo *DT);
-  
+
+  bool processLazyPropertyGetters();
+
   bool canHandle(SILInstruction *Inst);
 
 private:
@@ -496,20 +643,20 @@ private:
   class StackNode {
    public:
     StackNode(ScopedHTType *availableValues, DominanceInfoNode *n,
-              DominanceInfoNode::iterator child,
-              DominanceInfoNode::iterator end)
+              DominanceInfoNode::const_iterator child,
+              DominanceInfoNode::const_iterator end)
         : Node(n), ChildIter(child), EndIter(end), Scopes(availableValues),
       Processed(false) {}
 
     // Accessors.
     DominanceInfoNode *node() { return Node; }
-    DominanceInfoNode::iterator childIter() { return ChildIter; }
+    DominanceInfoNode::const_iterator childIter() { return ChildIter; }
     DominanceInfoNode *nextChild() {
       DominanceInfoNode *child = *ChildIter;
       ++ChildIter;
       return child;
     }
-    DominanceInfoNode::iterator end() { return EndIter; }
+    DominanceInfoNode::const_iterator end() { return EndIter; }
     bool isProcessed() { return Processed; }
     void process() { Processed = true; }
 
@@ -519,8 +666,8 @@ private:
 
     // Members.
     DominanceInfoNode *Node;
-    DominanceInfoNode::iterator ChildIter;
-    DominanceInfoNode::iterator EndIter;
+    DominanceInfoNode::const_iterator ChildIter;
+    DominanceInfoNode::const_iterator EndIter;
     NodeScope Scopes;
     bool Processed;
   };
@@ -576,40 +723,39 @@ bool CSE::processFunction(SILFunction &Fm, DominanceInfo *DT) {
   return Changed;
 }
 
-namespace {
-  // A very simple cloner for cloning instructions inside
-  // the same function. The only interesting thing it does
-  // is remapping the archetypes when it is required.
-  class InstructionCloner : public SILCloner<InstructionCloner> {
-    friend class SILCloner<InstructionCloner>;
-    friend class SILInstructionVisitor<InstructionCloner>;
-    SILInstruction *Result = nullptr;
-  public:
-    InstructionCloner(SILFunction *F) : SILCloner(*F) {}
+/// Replace lazy property getters (which are dominated by the same getter)
+/// by a direct load of the value.
+bool CSE::processLazyPropertyGetters() {
+  bool changed = false;
+  for (ApplyInst *ai : lazyPropertyGetters) {
+    SILFunction *getter = ai->getReferencedFunctionOrNull();
+    assert(getter && getter->isLazyPropertyGetter());
+    SILBasicBlock *callBlock = ai->getParent();
 
-    static SILInstruction *doIt(SILInstruction *I) {
-      InstructionCloner TC(I->getFunction());
-      return TC.clone(I);
-    }
-
-    SILInstruction *clone(SILInstruction *I) {
-      visit(I);
-      return Result;
-    }
-
-    void postProcess(SILInstruction *Orig, SILInstruction *Cloned) {
-      assert(Orig->getFunction() == &getBuilder().getFunction() &&
-             "cloning between functions is not supported");
-
-      Result = Cloned;
-      SILCloner<InstructionCloner>::postProcess(Orig, Cloned);
-    }
-    SILValue getMappedValue(SILValue Value) {
-      return Value;
-    }
-    SILBasicBlock *remapBasicBlock(SILBasicBlock *BB) { return BB; }
-  };
-} // end anonymous namespace
+    // Inline the getter...
+    SILInliner::inlineFullApply(ai, SILInliner::InlineKind::PerformanceInline,
+                                FuncBuilder);
+    
+    // ...and fold the switch_enum in the first block to the Optional.some case.
+    // The Optional.none branch becomes dead.
+    auto *sei = cast<SwitchEnumInst>(callBlock->getTerminator());
+    ASTContext &ctxt = callBlock->getParent()->getModule().getASTContext();
+    EnumElementDecl *someDecl = ctxt.getOptionalSomeDecl();
+    SILBasicBlock *someDest = sei->getCaseDestination(someDecl);
+    assert(someDest->getNumArguments() == 1);
+    SILValue enumVal = sei->getOperand();
+    SILBuilder builder(sei);
+    SILType ty = enumVal->getType().getEnumElementType(someDecl,
+                           sei->getModule(), builder.getTypeExpansionContext());
+    auto *ued =
+        builder.createUncheckedEnumData(sei->getLoc(), enumVal, someDecl, ty);
+    builder.createBranch(sei->getLoc(), someDest, { ued });
+    sei->eraseFromParent();
+    changed = true;
+    ++NumCSE;
+  }
+  return changed;
+}
 
 /// Update SIL basic block's arguments types which refer to opened
 /// archetypes. Replace such types by performing type substitutions
@@ -700,8 +846,8 @@ bool CSE::processOpenExistentialRef(OpenExistentialRefInst *Inst,
                                NewOpenedArchetype);
     }
   }
+
   // Now process candidates.
-  // TODO: Move it to CSE instance to avoid recreating it every time?
   SILOpenedArchetypesTracker OpenedArchetypesTracker(Inst->getFunction());
   // Register the new archetype to be used.
   OpenedArchetypesTracker.registerOpenedArchetypes(VI);
@@ -768,6 +914,42 @@ bool CSE::processOpenExistentialRef(OpenExistentialRefInst *Inst,
   return true;
 }
 
+/// Returns true if \p ai is a call to a lazy property getter, which we can
+/// handle.
+static bool isLazyPropertyGetter(ApplyInst *ai) {
+  SILFunction *callee = ai->getReferencedFunctionOrNull();
+  if (!callee || callee->isExternalDeclaration() ||
+      !callee->isLazyPropertyGetter())
+    return false;
+
+  // Only handle classes, but not structs.
+  // Lazy property getters of structs have an indirect inout self parameter.
+  // We don't know if the whole struct is overwritten between two getter calls.
+  // In such a case, the lazy property could be reset to an Optional.none.
+  // TODO: We could check this case with AliasAnalysis.
+  if (ai->getArgument(0)->getType().isAddress())
+    return false;
+
+  // Check if the first block has a switch_enum of an Optional.
+  // We don't handle getters of generic types, which have a switch_enum_addr.
+  // This will be obsolete with opaque values anyway.
+  auto *SEI = dyn_cast<SwitchEnumInst>(callee->getEntryBlock()->getTerminator());
+  if (!SEI)
+    return false;
+
+  ASTContext &ctxt = SEI->getFunction()->getModule().getASTContext();
+  EnumElementDecl *someDecl = ctxt.getOptionalSomeDecl();
+
+  for (unsigned i = 0, e = SEI->getNumCases(); i != e; ++i) {
+    auto Entry = SEI->getCase(i);
+    if (Entry.first == someDecl) {
+      SILBasicBlock *destBlock = Entry.second;
+      return destBlock->getNumArguments() == 1;
+    }
+  }
+  return false;
+}
+
 bool CSE::processNode(DominanceInfoNode *Node) {
   SILBasicBlock *BB = Node->getBlock();
   bool Changed = false;
@@ -793,12 +975,12 @@ bool CSE::processNode(DominanceInfoNode *Node) {
 
     // If the instruction can be simplified (e.g. X+0 = X) then replace it with
     // its simpler value.
-    if (SILValue V = simplifyInstruction(Inst)) {
-      LLVM_DEBUG(llvm::dbgs() << "SILCSE SIMPLIFY: " << *Inst << "  to: " << *V
-                              << '\n');
-      nextI = replaceAllSimplifiedUsesAndErase(Inst, V);
-      Changed = true;
+    InstModCallbacks callbacks;
+    nextI = simplifyAndReplaceAllSimplifiedUsesAndErase(Inst, callbacks,
+                                                        &DeadEndBBs);
+    if (callbacks.hadCallbackInvocation()) {
       ++NumSimplify;
+      Changed = true;
       continue;
     }
 
@@ -811,24 +993,53 @@ bool CSE::processNode(DominanceInfoNode *Node) {
     // match itself.
     assert(Inst->isIdenticalTo(Inst) &&
            "Inst must match itself for map to work");
+    assert(llvm::DenseMapInfo<SimpleValue>::isEqual(Inst, Inst) &&
+           "Inst must match itself for map to work");
 
     // Now that we know we have an instruction we understand see if the
     // instruction has an available value.  If so, use it.
     if (SILInstruction *AvailInst = AvailableValues->lookup(Inst)) {
       LLVM_DEBUG(llvm::dbgs() << "SILCSE CSE: " << *Inst << "  to: "
                               << *AvailInst << '\n');
-      // Instructions producing a new opened archetype need a special handling,
-      // because replacing these instructions may require a replacement
-      // of the opened archetype type operands in some of the uses.
-      if (!isa<OpenExistentialRefInst>(Inst)
-          || processOpenExistentialRef(
-              cast<OpenExistentialRefInst>(Inst),
-              cast<OpenExistentialRefInst>(AvailInst))) {
-        // processOpenExistentialRef may delete instructions other than Inst, so
-        // nextI must be reassigned.
-        nextI = std::next(Inst->getIterator());
-        Inst->replaceAllUsesPairwiseWith(AvailInst);
-        Inst->eraseFromParent();
+
+      auto *AI = dyn_cast<ApplyInst>(Inst);
+      if (AI && isLazyPropertyGetter(AI)) {
+        // We do the actual transformation for lazy property getters later. It
+        // changes the CFG and we don't want to disturb the dominator tree walk
+        // here.
+        lazyPropertyGetters.push_back(AI);
+        continue;
+      }
+      if (!isa<OpenExistentialRefInst>(Inst) ||
+          processOpenExistentialRef(cast<OpenExistentialRefInst>(Inst),
+                                    cast<OpenExistentialRefInst>(AvailInst))) {
+        if (Inst->getResults().empty()) {
+          nextI = std::next(Inst->getIterator());
+          Inst->eraseFromParent();
+          Changed = true;
+          ++NumCSE;
+          continue;
+        }
+        if (!Inst->getFunction()->hasOwnership()) {
+          Inst->replaceAllUsesPairwiseWith(AvailInst);
+          nextI = std::next(Inst->getIterator());
+          Inst->eraseFromParent();
+          Changed = true;
+          ++NumCSE;
+          continue;
+        }
+        // TODO: Support MultipleValueInstructionResult in OSSA RAUW utility and
+        // extend it here as well
+        if (!isa<SingleValueInstruction>(Inst))
+          continue;
+
+        OwnershipRAUWHelper helper(RAUWFixupContext,
+                                   cast<SingleValueInstruction>(Inst),
+                                   cast<SingleValueInstruction>(AvailInst));
+        if (!helper.isValid())
+          continue;
+        // Replace SingleValueInstruction using OSSA RAUW here
+        nextI = helper.perform();
         Changed = true;
         ++NumCSE;
         continue;
@@ -873,6 +1084,14 @@ bool CSE::canHandle(SILInstruction *Inst) {
     auto MB = Effects.getMemBehavior(RetainObserveKind::ObserveRetains);
     if (MB == SILInstruction::MemoryBehavior::None)
       return true;
+    
+    if (isLazyPropertyGetter(AI))
+      return true;
+      
+    if (SILFunction *callee = AI->getReferencedFunctionOrNull()) {
+      if (callee->isGlobalInit())
+        return true;
+    }
     
     return false;
   }
@@ -934,8 +1153,10 @@ bool CSE::canHandle(SILInstruction *Inst) {
   case SILInstructionKind::ThinFunctionToPointerInst:
   case SILInstructionKind::PointerToThinFunctionInst:
   case SILInstructionKind::MarkDependenceInst:
-  case SILInstructionKind::OpenExistentialRefInst:
+  case SILInstructionKind::InitExistentialMetatypeInst:
   case SILInstructionKind::WitnessMethodInst:
+  case SILInstructionKind::DestructureStructInst:
+  case SILInstructionKind::DestructureTupleInst:
     // Intentionally we don't handle (prev_)dynamic_function_ref.
     // They change at runtime.
 #define LOADABLE_REF_STORAGE(Name, ...) \
@@ -943,6 +1164,24 @@ bool CSE::canHandle(SILInstruction *Inst) {
   case SILInstructionKind::Name##ToRefInst:
 #include "swift/AST/ReferenceStorage.def"
     return true;
+    // TODO: open_existential_ref is not handled in OSSA currently
+    // This is because it is non trivial to ownership rauw copy_value users of a
+    // redundant open_existential_ref. Suppose we have an `open_existential_ref`
+    // and we are trying to replace it with another `open_existential_ref` of
+    // different type. If one of the users of the old `open_existential_ref` is
+    // a `copy_value`, we cannot just replace the use. Because `copy_value`'s
+    // result type will be the old type as well.
+    //
+    // In all other places in the compiler where such a rauw needs to be
+    // handled, a remapping type is initialized in the cloner and the
+    // instruction is cloned before providing to the rauw utility. This would
+    // correctly replace all the result types. But since copy_value does not
+    // have type dependent operands, we cannot handle it in a similar way.
+    //
+    // This is currently a TODO until we can implement a clean way to fix this
+    // issue.
+  case SILInstructionKind::OpenExistentialRefInst:
+    return !Inst->getFunction()->hasOwnership();
   default:
     return false;
   }
@@ -1046,10 +1285,10 @@ static bool tryToCSEOpenExtCall(OpenExistentialAddrInst *From,
 
   ApplyInst *NAI = Builder.createApply(ToAI->getLoc(), ToWMI,
                                        ToAI->getSubstitutionMap(), Args,
-                                       ToAI->isNonThrowing());
+                                       ToAI->getApplyOptions());
   FromAI->replaceAllUsesWith(NAI);
   FromAI->eraseFromParent();
-  NumOpenExtRemoved++;
+  ++NumOpenExtRemoved;
   return true;
 }
 
@@ -1090,10 +1329,10 @@ static bool CSExistentialInstructions(SILFunctionArgument *Arg,
   // Try to CSE the users of the current open_existential_addr instruction with
   // one of the other open_existential_addr that dominate it.
   int NumOpenInstr = Opens.size();
-  for (int i = 0; i < NumOpenInstr; i++) {
+  for (int i = 0; i < NumOpenInstr; ++i) {
     // Try to find a better dominating 'open' for the i-th instruction.
     OpenExistentialAddrInst *SomeOpen = TopDominator[i];
-    for (int j = 0; j < NumOpenInstr; j++) {
+    for (int j = 0; j < NumOpenInstr; ++j) {
 
       if (i == j || TopDominator[i] == TopDominator[j])
         continue;
@@ -1116,13 +1355,13 @@ static bool CSExistentialInstructions(SILFunctionArgument *Arg,
   // because we'll be adding new users and we need to make sure that we can
   // find the original users.
   llvm::SmallVector<ApplyWitnessPair, 8> OriginalAW;
-  for (int i=0; i < NumOpenInstr; i++) {
+  for (int i=0; i < NumOpenInstr; ++i) {
     OriginalAW.push_back(getOpenExistentialUsers(TopDominator[i]));
   }
 
   // Perform the CSE for the open_existential_addr instruction and their
   // dominating instruction.
-  for (int i=0; i < NumOpenInstr; i++) {
+  for (int i=0; i < NumOpenInstr; ++i) {
     if (Opens[i] != TopDominator[i])
       Changed |= tryToCSEOpenExtCall(Opens[i], TopDominator[i],
                                      OriginalAW[i], DA);
@@ -1136,7 +1375,7 @@ static bool CSExistentialInstructions(SILFunctionArgument *Arg,
 /// witness_method):
 ///
 /// open_existential_addr %0 : $*Pingable to $*@opened("1E467EB8-...")
-/// witness_method $@opened("1E467EB8-...") Pingable, #Pingable.ping!1, %2
+/// witness_method $@opened("1E467EB8-...") Pingable, #Pingable.ping, %2
 /// apply %3<@opened("1E467EB8-...") Pingable>(%2)
 ///
 /// \returns True if some instructions were modified.
@@ -1162,27 +1401,34 @@ class SILCSE : public SILFunctionTransform {
   bool RunsOnHighLevelSil;
   
   void run() override {
-    // FIXME: We should be able to support ownership.
-    if (getFunction()->hasOwnership())
-      return;
-
     LLVM_DEBUG(llvm::dbgs() << "***** CSE on function: "
                             << getFunction()->getName() << " *****\n");
 
     DominanceAnalysis* DA = getAnalysis<DominanceAnalysis>();
 
     auto *SEA = PM->getAnalysis<SideEffectAnalysis>();
+    SILOptFunctionBuilder FuncBuilder(*this);
 
-    CSE C(RunsOnHighLevelSil, SEA);
+    auto *Fn = getFunction();
+    DeadEndBlocks DeadEndBBs(Fn);
+    InstModCallbacks callbacks;
+    OwnershipFixupContext FixupCtx{callbacks, DeadEndBBs};
+    CSE C(RunsOnHighLevelSil, SEA, FuncBuilder, DeadEndBBs, FixupCtx);
     bool Changed = false;
 
     // Perform the traditional CSE.
-    Changed |= C.processFunction(*getFunction(), DA->get(getFunction()));
+    Changed |= C.processFunction(*Fn, DA->get(Fn));
 
     // Perform CSE of existential and witness_method instructions.
-    Changed |= CSEExistentialCalls(getFunction(),
-                                          DA->get(getFunction()));
-    if (Changed) {
+    Changed |= CSEExistentialCalls(Fn, DA->get(Fn));
+
+    // Handle calls to lazy property getters, which are collected in
+    // processFunction().
+    if (C.processLazyPropertyGetters()) {
+      // Cleanup the dead blocks from the inlined lazy property getters.
+      removeUnreachableBlocks(*Fn);
+      invalidateAnalysis(SILAnalysis::InvalidationKind::Everything);
+    } else if (Changed) {
       invalidateAnalysis(SILAnalysis::InvalidationKind::CallsAndInstructions);
     }
   }

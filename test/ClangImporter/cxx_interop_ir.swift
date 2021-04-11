@@ -1,4 +1,4 @@
-// RUN: %target-swift-frontend -module-name cxx_ir -I %S/Inputs/custom-modules -module-cache-path %t -enable-cxx-interop -emit-ir -o - -primary-file %s | %FileCheck %s
+// RUN: %target-swiftxx-frontend -module-name cxx_ir -I %S/Inputs/custom-modules -emit-ir -o - -primary-file %s | %FileCheck %s
 
 import CXXInterop
 
@@ -9,17 +9,17 @@ func indirectUsage() {
   useT(makeT())
 }
 
-// CHECK-LABEL: define hidden swiftcc %swift.type* @"$s6cxx_ir14reflectionInfo3argypXpSo2nsV1TV_tF"
-// CHECK: %0 = call swiftcc %swift.metadata_response @"$sSo2nsV1TVMa"({{i64|i32}} 0)
+// CHECK-LABEL: define hidden swiftcc %swift.type* @"$s6cxx_ir14reflectionInfo3argypXpSo2nsV10CXXInteropE1TV_tF"
+// CHECK: %0 = call swiftcc %swift.metadata_response @"$sSo2nsV10CXXInteropE1TVMa"({{i64|i32}} 0)
 func reflectionInfo(arg: namespacedT) -> Any.Type {
   return type(of: arg)
 }
 
-// CHECK: define hidden swiftcc void @"$s6cxx_ir24namespaceManglesIntoName3argySo2nsV1TV_tF"
+// CHECK: define hidden swiftcc void @"$s6cxx_ir24namespaceManglesIntoName3argySo2nsV10CXXInteropE1TV_tF"
 func namespaceManglesIntoName(arg: namespacedT) {
 }
 
-// CHECK: define hidden swiftcc void @"$s6cxx_ir42namespaceManglesIntoNameForUsingShadowDecl3argySo2nsV14NamespacedTypeV_tF"
+// CHECK: define hidden swiftcc void @"$s6cxx_ir42namespaceManglesIntoNameForUsingShadowDecl3argySo2nsV10CXXInteropE14NamespacedTypeV_tF"
 func namespaceManglesIntoNameForUsingShadowDecl(arg: NamespacedType) {
 }
 
@@ -30,7 +30,7 @@ func accessNSMember() {
   useT(ns.doMakeT())
 }
 
-// CHECK-LABEL: define hidden swiftcc i32 @"$s6cxx_ir12basicMethods1as5Int32VSpySo0D0VG_tF"(i8*)
+// CHECK-LABEL: define hidden swiftcc i32 @"$s6cxx_ir12basicMethods1as5Int32VSpySo0D0VG_tF"(i8* %0)
 // CHECK: [[THIS_PTR1:%.*]] = bitcast i8* %0 to %TSo7MethodsV*
 // CHECK: [[THIS_PTR2:%.*]] = bitcast %TSo7MethodsV* [[THIS_PTR1]] to %class.Methods*
 // CHECK: [[RESULT:%.*]] = call {{(signext )?}}i32 @{{_ZN7Methods12SimpleMethodEi|"\?SimpleMethod@Methods@@QEAAHH@Z"}}(%class.Methods* [[THIS_PTR2]], i32{{( signext)?}} 4)
@@ -39,7 +39,7 @@ func basicMethods(a: UnsafeMutablePointer<Methods>) -> Int32 {
   return a.pointee.SimpleMethod(4)
 }
 
-// CHECK-LABEL: define hidden swiftcc i32 @"$s6cxx_ir17basicMethodsConst1as5Int32VSpySo0D0VG_tF"(i8*)
+// CHECK-LABEL: define hidden swiftcc i32 @"$s6cxx_ir17basicMethodsConst1as5Int32VSpySo0D0VG_tF"(i8* %0)
 // CHECK: [[THIS_PTR1:%.*]] = bitcast i8* %0 to %TSo7MethodsV*
 // CHECK: [[THIS_PTR2:%.*]] = bitcast %TSo7MethodsV* [[THIS_PTR1]] to %class.Methods*
 // CHECK: [[RESULT:%.*]] = call {{(signext )?}}i32 @{{_ZNK7Methods17SimpleConstMethodEi|"\?SimpleConstMethod@Methods@@QEBAHH@Z"}}(%class.Methods* [[THIS_PTR2]], i32{{( signext)?}} 3)
@@ -55,7 +55,7 @@ func basicMethodsStatic() -> Int32 {
   return Methods.SimpleStaticMethod(5)
 }
 
-// CHECK-LABEL: define hidden swiftcc i32 @"$s6cxx_ir12basicMethods1as5Int32VSpySo8Methods2VG_tF"(i8*)
+// CHECK-LABEL: define hidden swiftcc i32 @"$s6cxx_ir12basicMethods1as5Int32VSpySo8Methods2VG_tF"(i8* %0)
 // CHECK: [[THIS_PTR1:%.*]] = bitcast i8* %0 to %TSo8Methods2V*
 // CHECK: [[THIS_PTR2:%.*]] = bitcast %TSo8Methods2V* [[THIS_PTR1]] to %class.Methods2*
 // CHECK: [[RESULT:%.*]] = call {{(signext )?}}i32 @{{_ZN8Methods212SimpleMethodEi|"\?SimpleMethod@Methods2@@QEAAHH@Z"}}(%class.Methods2* [[THIS_PTR2]], i32{{( signext)?}} 4)

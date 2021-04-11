@@ -540,18 +540,20 @@ func testStrangeSelectors(obj: StrangeSelectors) {
 
 func testProtocolQualified(_ obj: CopyableNSObject, cell: CopyableSomeCell,
                            plainObj: NSObject, plainCell: SomeCell) {
-  _ = obj as NSObject // expected-error {{'CopyableNSObject' (aka 'NSCopying & NSObjectProtocol') is not convertible to 'NSObject'; did you mean to use 'as!' to force downcast?}} {{11-13=as!}}
+  _ = obj as NSObject // expected-error {{'CopyableNSObject' (aka 'NSCopying & NSObjectProtocol') is not convertible to 'NSObject'}} 
+  // expected-note@-1 {{did you mean to use 'as!' to force downcast?}} {{11-13=as!}}
   _ = obj as NSObjectProtocol
   _ = obj as NSCopying
-  _ = obj as SomeCell // expected-error {{'CopyableNSObject' (aka 'NSCopying & NSObjectProtocol') is not convertible to 'SomeCell'; did you mean to use 'as!' to force downcast?}} {{11-13=as!}}
+  _ = obj as SomeCell // expected-error {{'CopyableNSObject' (aka 'NSCopying & NSObjectProtocol') is not convertible to 'SomeCell'}}
+  // expected-note@-1 {{did you mean to use 'as!' to force downcast?}} {{11-13=as!}}
 
   _ = cell as NSObject
   _ = cell as NSObjectProtocol
   _ = cell as NSCopying
   _ = cell as SomeCell
   
-  _ = plainObj as CopyableNSObject // expected-error {{'NSObject' is not convertible to 'CopyableNSObject' (aka 'NSCopying & NSObjectProtocol'); did you mean to use 'as!' to force downcast?}} {{16-18=as!}}
-  _ = plainCell as CopyableSomeCell // expected-error {{'SomeCell' is not convertible to 'CopyableSomeCell' (aka 'SomeCell & NSCopying'); did you mean to use 'as!' to force downcast?}}
+  _ = plainObj as CopyableNSObject // expected-error {{value of type 'NSObject' does not conform to 'CopyableNSObject' (aka 'NSCopying & NSObjectProtocol') in coercion}} 
+  _ = plainCell as CopyableSomeCell // expected-error {{value of type 'SomeCell' does not conform to 'CopyableSomeCell' (aka 'SomeCell & NSCopying') in coercion}}
 }
 
 extension Printing {
@@ -675,8 +677,8 @@ func testBridgeFunctionPointerTypedefs(fptrTypedef: FPTypedef) {
 }
 
 func testNonTrivialStructs() {
-  _ = NonTrivialToCopy() // expected-error {{use of unresolved identifier 'NonTrivialToCopy'}}
-  _ = NonTrivialToCopyWrapper() // expected-error {{use of unresolved identifier 'NonTrivialToCopyWrapper'}}
+  _ = NonTrivialToCopy() // expected-error {{cannot find 'NonTrivialToCopy' in scope}}
+  _ = NonTrivialToCopyWrapper() // expected-error {{cannot find 'NonTrivialToCopyWrapper' in scope}}
   _ = TrivialToCopy() // okay
 }
 

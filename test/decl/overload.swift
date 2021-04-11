@@ -79,7 +79,6 @@ enum mixed_redecl3 {} // expected-error {{invalid redeclaration}}
 // expected-note @-1 2{{found this candidate}}
 enum mixed_redecl3a : mixed_redecl3 {} // expected-error {{'mixed_redecl3' is ambiguous for type lookup in this context}}
 // expected-error@-1 {{an enum with no cases cannot declare a raw type}}
-// expected-error@-2 {{raw type}}
 class mixed_redecl3b : mixed_redecl3 {} // expected-error {{'mixed_redecl3' is ambiguous for type lookup in this context}}
 
 class mixed_redecl4 {} // expected-note {{previously declared here}}
@@ -380,17 +379,25 @@ func inout2(x: inout Int) { }
 
 // optionals
 func optional(x: Int?) { } // expected-note{{previously declared}}
-func optional(x: Int!) { } // expected-error{{invalid redeclaration of 'optional(x:)'}}
+func optional(x: Int!) { } 
+// expected-error@-1{{invalid redeclaration of 'optional(x:)'}}
+// expected-note@-2 {{implicitly unwrapped optional parameter is of same type as optional parameter}}
 
 func optionalInOut(x: inout Int?) { } // expected-note{{previously declared}}
-func optionalInOut(x: inout Int!) { } // expected-error{{invalid redeclaration of 'optionalInOut(x:)}}
+func optionalInOut(x: inout Int!) { } 
+// expected-error@-1{{invalid redeclaration of 'optionalInOut(x:)'}}
+// expected-note@-2 {{implicitly unwrapped optional parameter is of same type as optional parameter}}
 
 class optionalOverloads {
   class func optionalInOut(x: inout Int?) { } // expected-note{{previously declared}}
-  class func optionalInOut(x: inout Int!) { } // expected-error{{invalid redeclaration of 'optionalInOut(x:)'}}
+  class func optionalInOut(x: inout Int!) { } 
+  // expected-error@-1{{invalid redeclaration of 'optionalInOut(x:)'}}
+  // expected-note@-2 {{implicitly unwrapped optional parameter is of same type as optional parameter}}
 
   func optionalInOut(x: inout Int?) { } // expected-note{{previously declared}}
-  func optionalInOut(x: inout Int!) { } // expected-error{{invalid redeclaration of 'optionalInOut(x:)}}
+  func optionalInOut(x: inout Int!) { } 
+  // expected-error@-1{{invalid redeclaration of 'optionalInOut(x:)'}}
+  // expected-note@-2 {{implicitly unwrapped optional parameter is of same type as optional parameter}}
 }
 
 func optional_3() -> Int? { } // expected-note{{previously declared}}
@@ -577,23 +584,27 @@ enum SR_10084_E_8 {
 }
 
 enum SR_10084_E_9 {
-  case A // expected-note {{'A' previously declared here}}
+  case A // expected-note {{'A' previously declared here}} expected-note {{found this candidate}}
   static let A: SR_10084_E_9 = .A // expected-error {{invalid redeclaration of 'A'}}
+  // expected-error@-1 {{ambiguous use of 'A'}} expected-note@-1 {{found this candidate}}
 }
 
 enum SR_10084_E_10 {
   static let A: SR_10084_E_10 = .A // expected-note {{'A' previously declared here}}
-  case A // expected-error {{invalid redeclaration of 'A'}}
+  // expected-error@-1 {{ambiguous use of 'A'}} expected-note@-1 {{found this candidate}}
+  case A // expected-error {{invalid redeclaration of 'A'}} expected-note {{found this candidate}}
 }
 
 enum SR_10084_E_11 {
-  case A // expected-note {{'A' previously declared here}}
+  case A // expected-note {{'A' previously declared here}} expected-note {{found this candidate}}
   static var A: SR_10084_E_11 = .A // expected-error {{invalid redeclaration of 'A'}}
+  // expected-error@-1 {{ambiguous use of 'A'}} expected-note@-1 {{found this candidate}}
 }
 
 enum SR_10084_E_12 {
   static var A: SR_10084_E_12 = .A // expected-note {{'A' previously declared here}}
-  case A // expected-error {{invalid redeclaration of 'A'}}
+  // expected-error@-1 {{ambiguous use of 'A'}} expected-note@-1 {{found this candidate}}
+  case A // expected-error {{invalid redeclaration of 'A'}} expected-note {{found this candidate}}
 }
 
 enum SR_10084_E_13 {

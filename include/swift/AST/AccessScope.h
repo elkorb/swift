@@ -24,12 +24,16 @@ namespace swift {
 /// a particular declaration can be accessed.
 class AccessScope {
   /// The declaration context (if not public) along with a bit saying
-  /// whether this scope is private (or not).
+  /// whether this scope is private, SPI or not.
+  /// If the declaration context is set, the bit means that the scope is
+  /// private or not. If the declaration context is null, the bit means that
+  /// this scope is SPI or not.
   llvm::PointerIntPair<const DeclContext *, 1, bool> Value;
+
 public:
   AccessScope(const DeclContext *DC, bool isPrivate = false);
 
-  static AccessScope getPublic() { return AccessScope(nullptr); }
+  static AccessScope getPublic() { return AccessScope(nullptr, false); }
 
   /// Check if private access is allowed. This is a lexical scope check in Swift
   /// 3 mode. In Swift 4 mode, declarations and extensions of the same type will
@@ -46,7 +50,7 @@ public:
   }
 
   bool isPublic() const { return !Value.getPointer(); }
-  bool isPrivate() const { return Value.getInt(); }
+  bool isPrivate() const { return Value.getPointer() && Value.getInt(); }
   bool isFileScope() const;
   bool isInternal() const;
 

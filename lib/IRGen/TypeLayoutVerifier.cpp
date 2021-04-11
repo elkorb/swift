@@ -129,7 +129,7 @@ IRGenTypeVerifierFunction::emit(ArrayRef<CanType> formalTypes) {
           Builder.CreateMemSet(xiBuf.getAddress(),
                                    llvm::ConstantInt::get(IGM.Int8Ty, 0x5A),
                                    fixedTI->getFixedSize().getValue(),
-                                   fixedTI->getFixedAlignment().getValue());
+                                   llvm::MaybeAlign(fixedTI->getFixedAlignment().getValue()));
           
           // Ask the runtime to store an extra inhabitant.
           auto tag = llvm::ConstantInt::get(IGM.Int32Ty, i+1);
@@ -291,8 +291,8 @@ void IRGenModule::emitTypeVerifier() {
     return;
 
   // Find the entry point.
-  SILFunction *EntryPoint =
-    getSILModule().lookUpFunction(SWIFT_ENTRY_POINT_FUNCTION);
+  SILFunction *EntryPoint = getSILModule().lookUpFunction(
+      getSILModule().getASTContext().getEntryPointFunctionName());
 
   if (!EntryPoint)
     return;

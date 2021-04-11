@@ -26,6 +26,7 @@
 #include "llvm/ADT/PointerUnion.h"
 #include "llvm/ADT/STLExtras.h"
 #include "swift/Basic/Debug.h"
+#include "swift/Basic/Located.h"
 #include "swift/Basic/InlineBitfield.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/TrailingObjects.h"
@@ -47,7 +48,7 @@ enum : unsigned { NumTypeReprKindBits =
   countBitsUsed(static_cast<unsigned>(TypeReprKind::Last_TypeRepr)) };
 
 /// Representation of a type as written in source.
-class alignas(8) TypeRepr {
+class alignas(1 << TypeReprAlignInBits) TypeRepr {
   TypeRepr(const TypeRepr&) = delete;
   void operator=(const TypeRepr&) = delete;
 
@@ -162,9 +163,6 @@ public:
   void print(raw_ostream &OS, const PrintOptions &Opts = PrintOptions()) const;
   void print(ASTPrinter &Printer, const PrintOptions &Opts) const;
   SWIFT_DEBUG_DUMP;
-
-  /// Clone the given type representation.
-  TypeRepr *clone(const ASTContext &ctx) const;
 };
 
 /// A TypeRepr for a type with a syntax error.  Can be used both as a
@@ -262,7 +260,7 @@ class ComponentIdentTypeRepr : public IdentTypeRepr {
   /// component.
   ///
   /// The initial parsed representation is always an identifier, and
-  /// name binding will resolve this to a specific declaration.
+  /// name lookup will resolve this to a specific declaration.
   llvm::PointerUnion<DeclNameRef, TypeDecl *> IdOrDecl;
 
   /// The declaration context from which the bound declaration was
@@ -281,7 +279,8 @@ public:
   /// correction.
   void overwriteNameRef(DeclNameRef newId) { IdOrDecl = newId; }
 
-  /// Return true if this has been name-bound already.
+  /// Return true if this name has been resolved to a type decl. This happens
+  /// during type resolution.
   bool isBound() const { return IdOrDecl.is<TypeDecl *>(); }
 
   TypeDecl *getBoundDecl() const { return IdOrDecl.dyn_cast<TypeDecl*>(); }
@@ -471,36 +470,57 @@ inline IdentTypeRepr::ComponentRange IdentTypeRepr::getComponentRange() {
 ///   (x: Foo, y: Bar) -> Baz
 /// \endcode
 class FunctionTypeRepr : public TypeRepr {
-  // These fields are only used in SIL mode, which is the only time
-  // we can have polymorphic and substituted function values.
+  // The generic params / environment / substitutions fields are only used
+  // in SIL mode, which is the only time we can have polymorphic and
+  // substituted function values.
   GenericParamList *GenericParams;
   GenericEnvironment *GenericEnv;
-  bool GenericParamsAreImplied;
-  ArrayRef<TypeRepr *> GenericSubs;
+  ArrayRef<TypeRepr *> InvocationSubs;
+  GenericParamList *PatternGenericParams;
+  GenericEnvironment *PatternGenericEnv;
+  ArrayRef<TypeRepr *> PatternSubs;
 
   TupleTypeRepr *ArgsTy;
   TypeRepr *RetTy;
-  SourceLoc ArrowLoc;
+  SourceLoc AsyncLoc;
   SourceLoc ThrowsLoc;
+  SourceLoc ArrowLoc;
 
 public:
   FunctionTypeRepr(GenericParamList *genericParams, TupleTypeRepr *argsTy,
-                   SourceLoc throwsLoc, SourceLoc arrowLoc, TypeRepr *retTy,
-                   bool GenericParamsAreImplied = false,
-                   ArrayRef<TypeRepr *> GenericSubs = {})
+                   SourceLoc asyncLoc, SourceLoc throwsLoc, SourceLoc arrowLoc,
+                   TypeRepr *retTy,
+                   GenericParamList *patternGenericParams = nullptr,
+                   ArrayRef<TypeRepr *> patternSubs = {},
+                   ArrayRef<TypeRepr *> invocationSubs = {})
     : TypeRepr(TypeReprKind::Function),
-      GenericParams(genericParams),
-      GenericEnv(nullptr),
-      GenericParamsAreImplied(GenericParamsAreImplied),
-      GenericSubs(GenericSubs),
+      GenericParams(genericParams), GenericEnv(nullptr),
+      InvocationSubs(invocationSubs),
+      PatternGenericParams(patternGenericParams), PatternGenericEnv(nullptr),
+      PatternSubs(patternSubs),
       ArgsTy(argsTy), RetTy(retTy),
-      ArrowLoc(arrowLoc), ThrowsLoc(throwsLoc) {
+      AsyncLoc(asyncLoc), ThrowsLoc(throwsLoc), ArrowLoc(arrowLoc) {
   }
 
   GenericParamList *getGenericParams() const { return GenericParams; }
   GenericEnvironment *getGenericEnvironment() const { return GenericEnv; }
-  bool areGenericParamsImplied() const { return GenericParamsAreImplied; }
-  ArrayRef<TypeRepr*> getSubstitutions() const { return GenericSubs; }
+
+  GenericParamList *getPatternGenericParams() const {
+    return PatternGenericParams;
+  }
+  GenericEnvironment *getPatternGenericEnvironment() const {
+    return PatternGenericEnv;
+  }
+
+  ArrayRef<TypeRepr*> getPatternSubstitutions() const { return PatternSubs; }
+  ArrayRef<TypeRepr*> getInvocationSubstitutions() const {
+    return InvocationSubs;
+  }
+
+  void setPatternGenericEnvironment(GenericEnvironment *genericEnv) {
+    assert(PatternGenericEnv == nullptr);
+    PatternGenericEnv = genericEnv;
+  }
 
   void setGenericEnvironment(GenericEnvironment *genericEnv) {
     assert(GenericEnv == nullptr);
@@ -509,10 +529,12 @@ public:
 
   TupleTypeRepr *getArgsTypeRepr() const { return ArgsTy; }
   TypeRepr *getResultTypeRepr() const { return RetTy; }
-  bool throws() const { return ThrowsLoc.isValid(); }
+  bool isAsync() const { return AsyncLoc.isValid(); }
+  bool isThrowing() const { return ThrowsLoc.isValid(); }
 
-  SourceLoc getArrowLoc() const { return ArrowLoc; }
+  SourceLoc getAsyncLoc() const { return AsyncLoc; }
   SourceLoc getThrowsLoc() const { return ThrowsLoc; }
+  SourceLoc getArrowLoc() const { return ArrowLoc; }
 
   static bool classof(const TypeRepr *T) {
     return T->getKind() == TypeReprKind::Function;
@@ -672,9 +694,9 @@ struct TupleTypeReprElement {
 /// \endcode
 class TupleTypeRepr final : public TypeRepr,
     private llvm::TrailingObjects<TupleTypeRepr, TupleTypeReprElement,
-                                  std::pair<SourceLoc, unsigned>> {
+                                  Located<unsigned>> {
   friend TrailingObjects;
-  typedef std::pair<SourceLoc, unsigned> SourceLocAndIdx;
+  typedef Located<unsigned> SourceLocAndIdx;
 
   SourceRange Parens;
   
@@ -745,12 +767,12 @@ public:
 
   SourceLoc getEllipsisLoc() const {
     return hasEllipsis() ?
-      getTrailingObjects<SourceLocAndIdx>()[0].first : SourceLoc();
+      getTrailingObjects<SourceLocAndIdx>()[0].Loc : SourceLoc();
   }
 
   unsigned getEllipsisIndex() const {
     return hasEllipsis() ?
-      getTrailingObjects<SourceLocAndIdx>()[0].second :
+      getTrailingObjects<SourceLocAndIdx>()[0].Item :
         Bits.TupleTypeRepr.NumElements;
   }
 
@@ -758,8 +780,8 @@ public:
     if (hasEllipsis()) {
       Bits.TupleTypeRepr.HasEllipsis = false;
       getTrailingObjects<SourceLocAndIdx>()[0] = {
-        SourceLoc(),
-        getNumElements()
+        getNumElements(),
+        SourceLoc()
       };
     }
   }
@@ -1063,6 +1085,34 @@ private:
   friend class TypeRepr;
 };
 
+/// TypeRepr for a user-specified placeholder (essentially, a user-facing
+/// representation of an anonymous type variable.
+///
+/// Can occur anywhere a normal type would occur, though usually expected to be
+/// used in structural positions like \c Generic<Int,_>.
+class PlaceholderTypeRepr: public TypeRepr {
+  SourceLoc UnderscoreLoc;
+
+public:
+  PlaceholderTypeRepr(SourceLoc loc)
+    : TypeRepr(TypeReprKind::Placeholder), UnderscoreLoc(loc)
+  {}
+
+    SourceLoc getUnderscoreLoc() const { return UnderscoreLoc; }
+
+    static bool classof(const TypeRepr *T) {
+      return T->getKind() == TypeReprKind::Placeholder;
+    }
+    static bool classof(const PlaceholderTypeRepr *T) { return true; }
+
+  private:
+    SourceLoc getStartLocImpl() const { return UnderscoreLoc; }
+    SourceLoc getEndLocImpl() const { return UnderscoreLoc; }
+    SourceLoc getLocImpl() const { return UnderscoreLoc; }
+    void printImpl(ASTPrinter &Printer, const PrintOptions &Opts) const;
+    friend class TypeRepr;
+};
+
 /// SIL-only TypeRepr for box types.
 ///
 /// Boxes are either concrete: { var Int, let String }
@@ -1176,6 +1226,7 @@ inline bool TypeRepr::isSimple() const {
   case TypeReprKind::SILBox:
   case TypeReprKind::Shared:
   case TypeReprKind::Owned:
+  case TypeReprKind::Placeholder:
     return true;
   }
   llvm_unreachable("bad TypeRepr kind");

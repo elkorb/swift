@@ -29,6 +29,26 @@ class Expr;
 class VarDecl;
 class OpaqueValueExpr;
 
+/// The kind of property initializer to look for
+enum class PropertyWrapperInitKind {
+  /// An initial-value initializer (i.e. `init(initialValue:)`), which is
+  /// deprecated.
+  InitialValue,
+  /// An wrapped-value initializer (i.e. `init(wrappedValue:)`)
+  WrappedValue,
+  /// A projected-value initializer (i.e. `init(projectedValue:)`)
+  ProjectedValue,
+  /// An default-value initializer (i.e. `init()` or `init(defaultArgs...)`)
+  Default
+};
+
+/// Information about an applied property wrapper, including the backing wrapper type
+/// and the initialization kind.
+struct AppliedPropertyWrapper {
+  Type wrapperType;
+  PropertyWrapperInitKind initKind;
+};
+
 /// Describes a property wrapper type.
 struct PropertyWrapperTypeInfo {
   /// The property through which access that uses this wrapper type is
@@ -49,6 +69,8 @@ struct PropertyWrapperTypeInfo {
     NoDefaultValueInit = 0,
     HasDefaultValueInit
   } defaultInit = NoDefaultValueInit;
+
+  bool hasProjectedValueInit = false;
 
   /// The property through which the projection value ($foo) will be accessed.
   ///
@@ -123,46 +145,52 @@ struct PropertyWrapperMutability {
 
 void simple_display(llvm::raw_ostream &os, PropertyWrapperMutability m);
 
-/// Describes the backing property of a property that has an attached wrapper.
-struct PropertyWrapperBackingPropertyInfo {
+/// Describes whether the reference to a property wrapper instance used for
+/// accessing a wrapped property should be an l-value or not.
+struct PropertyWrapperLValueness {
+  llvm::SmallVector<bool, 4> isLValueForGetAccess;
+  llvm::SmallVector<bool, 4> isLValueForSetAccess;
+
+  PropertyWrapperLValueness(unsigned numWrappers)
+      : isLValueForGetAccess(numWrappers), isLValueForSetAccess(numWrappers) {}
+
+  bool operator==(PropertyWrapperLValueness other) const {
+    return (isLValueForGetAccess == other.isLValueForGetAccess &&
+            isLValueForSetAccess == other.isLValueForSetAccess);
+  }
+};
+
+void simple_display(llvm::raw_ostream &os, PropertyWrapperLValueness l);
+
+/// Given the initializer for a property with an attached property wrapper,
+/// dig out the wrapped value placeholder for the original initialization
+/// expression.
+///
+/// \note The wrapped value placeholder is injected for properties that can
+/// be initialized out-of-line using an expression of the wrapped property type.
+PropertyWrapperValuePlaceholderExpr *findWrappedValuePlaceholder(Expr *init);
+
+/// The synthesized auxiliary declarations for a wrapped property, including the
+/// backing property wrapper, the projected value variable, and if the wrapped
+/// declaration is a parameter, the local wrapped value variable.
+struct PropertyWrapperAuxiliaryVariables {
   /// The backing property.
   VarDecl *backingVar = nullptr;
 
-  /// The storage wrapper property, if any. When present, this takes the name
-  /// '$foo' from `backingVar`.
-  VarDecl *storageWrapperVar = nullptr;
+  /// The synthesized projection property, if any. When present, this takes the name
+  /// of the original wrapped property prefixed with \c $
+  VarDecl *projectionVar = nullptr;
 
-  /// When the original default value is specified in terms of an '='
-  /// initializer on the initial property, e.g.,
-  ///
-  /// \code
-  /// @Lazy var i = 17
-  /// \end
-  ///
-  /// This is the specified initial value (\c 17), which is suitable for
-  /// embedding in the expression \c initializeFromOriginal.
-  Expr *originalInitialValue = nullptr;
+  /// The synthesized local wrapped value property, which shadows the original wrapped
+  /// declaration if it is a parameter.
+  VarDecl *localWrappedValueVar = nullptr;
 
-  /// An expression that initializes the backing property from a value of
-  /// the original property's type (e.g., via `init(wrappedValue:)`), or
-  /// \c NULL if the backing property can only be initialized directly.
-  Expr *initializeFromOriginal = nullptr;
+  PropertyWrapperAuxiliaryVariables() {}
 
-  /// When \c initializeFromOriginal is non-NULL, the opaque value that
-  /// is used as a stand-in for a value of the original property's type.
-  OpaqueValueExpr *underlyingValue = nullptr;
-
-  PropertyWrapperBackingPropertyInfo() { }
-  
-  PropertyWrapperBackingPropertyInfo(VarDecl *backingVar,
-                                      VarDecl *storageWrapperVar,
-                                      Expr *originalInitialValue,
-                                      Expr *initializeFromOriginal,
-                                      OpaqueValueExpr *underlyingValue)
-    : backingVar(backingVar), storageWrapperVar(storageWrapperVar),
-      originalInitialValue(originalInitialValue),
-      initializeFromOriginal(initializeFromOriginal),
-      underlyingValue(underlyingValue) { }
+  PropertyWrapperAuxiliaryVariables(VarDecl *backingVar, VarDecl *projectionVar,
+                                    VarDecl *localWrappedValueVar = nullptr)
+      : backingVar(backingVar), projectionVar(projectionVar),
+        localWrappedValueVar(localWrappedValueVar) {}
 
   /// Whether this is a valid property wrapper.
   bool isValid() const {
@@ -170,11 +198,75 @@ struct PropertyWrapperBackingPropertyInfo {
   }
 
   explicit operator bool() const { return isValid(); }
+};
 
-  friend bool operator==(const PropertyWrapperBackingPropertyInfo &lhs,
-                         const PropertyWrapperBackingPropertyInfo &rhs) {
-    // FIXME: Can't currently compare expressions.
-    return lhs.backingVar == rhs.backingVar;
+/// Describes how to initialize the backing storage of a property with
+/// an attached wrapper.
+class PropertyWrapperInitializerInfo {
+  struct {
+    /// An expression that initializes the backing property from a value of
+    /// the original property's type via \c init(wrappedValue:) if supported
+    /// by the wrapper type.
+    Expr *expr = nullptr;
+
+    /// When \c expr is not null, the opaque value that is used as
+    /// a placeholder for a value of the original property's type.
+    PropertyWrapperValuePlaceholderExpr *placeholder = nullptr;
+  } wrappedValueInit;
+
+  struct {
+    /// An expression that initializes the backing property from a value of
+    /// the synthesized projection type via \c init(projectedValue:) if
+    /// supported by the wrapper type.
+    Expr *expr = nullptr;
+
+    /// When \c expr is not null, the opaque value that is used as
+    /// a placeholder for a value of the projection type.
+    PropertyWrapperValuePlaceholderExpr *placeholder = nullptr;
+  } projectedValueInit;
+
+public:
+  PropertyWrapperInitializerInfo() { }
+
+  PropertyWrapperInitializerInfo(Expr *wrappedValueInitExpr,
+                                 Expr *projectedValueInitExpr) {
+    wrappedValueInit.expr = wrappedValueInitExpr;
+    if (wrappedValueInitExpr) {
+      wrappedValueInit.placeholder = findWrappedValuePlaceholder(wrappedValueInitExpr);
+    }
+
+    projectedValueInit.expr = projectedValueInitExpr;
+    if (projectedValueInitExpr) {
+      projectedValueInit.placeholder = findWrappedValuePlaceholder(projectedValueInitExpr);
+    }
+  }
+
+  bool hasInitFromWrappedValue() const {
+    return wrappedValueInit.expr != nullptr;
+  }
+
+  Expr *getInitFromWrappedValue() const {
+    return wrappedValueInit.expr;
+  }
+
+  PropertyWrapperValuePlaceholderExpr *getWrappedValuePlaceholder() {
+    return wrappedValueInit.placeholder;
+  }
+
+  bool hasInitFromProjectedValue() const {
+    return projectedValueInit.expr != nullptr;
+  }
+
+  Expr *getInitFromProjectedValue() const {
+    return projectedValueInit.expr;
+  }
+
+  PropertyWrapperValuePlaceholderExpr *getProjectedValuePlaceholder() {
+    return projectedValueInit.placeholder;
+  }
+
+  bool hasSynthesizedInitializers() const {
+    return hasInitFromWrappedValue() || hasInitFromProjectedValue();
   }
 };
 
@@ -184,14 +276,11 @@ void simple_display(
 
 void simple_display(
     llvm::raw_ostream &out,
-    const PropertyWrapperBackingPropertyInfo &backingInfo);
+    const PropertyWrapperInitializerInfo &initInfo);
 
-/// Given the initializer for the given property with an attached property
-/// wrapper, dig out the original initialization expression.
-///
-/// Cannot just dig out the getOriginalInit() value because this function checks
-/// types, etc. Erroneous code won't return a result from here.
-Expr *findOriginalPropertyWrapperInitialValue(VarDecl *var, Expr *init);
+void simple_display(
+    llvm::raw_ostream &out,
+    const PropertyWrapperAuxiliaryVariables &auxiliaryVars);
 
 } // end namespace swift
 

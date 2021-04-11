@@ -124,7 +124,7 @@ public struct Unmanaged<Instance: AnyObject> {
   /// Violation of this will incur undefined behavior.
   ///
   /// A lifetime of a reference 'the instance' is fixed over a point in the
-  /// programm if:
+  /// program if:
   ///
   /// * There exists a global variable that references 'the instance'.
   ///
@@ -203,13 +203,19 @@ public struct Unmanaged<Instance: AnyObject> {
   ///    }
   ///  }
   @inlinable // unsafe-performance
+  @_transparent
   public func _withUnsafeGuaranteedRef<Result>(
     _ body: (Instance) throws -> Result
   ) rethrows -> Result {
-    let (guaranteedInstance, token) = Builtin.unsafeGuaranteed(_value)
-    let result = try body(guaranteedInstance)
-    Builtin.unsafeGuaranteedEnd(token)
-    return result
+    var tmp = self
+    // Builtin.convertUnownedUnsafeToGuaranteed expects to have a base value
+    // that the +0 value depends on. In this case, we are assuming that is done
+    // for us opaquely already. So, the builtin will emit a mark_dependence on a
+    // trivial object. The optimizer knows to eliminate that so we do not have
+    // any overhead from this.
+    let fakeBase: Int? = nil
+    return try body(Builtin.convertUnownedUnsafeToGuaranteed(fakeBase,
+                                                             &tmp._value))
   }
 
   /// Performs an unbalanced retain of the object.
@@ -234,3 +240,6 @@ public struct Unmanaged<Instance: AnyObject> {
   }
 #endif
 }
+
+extension Unmanaged: Sendable where Instance: Sendable { }
+

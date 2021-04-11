@@ -147,7 +147,7 @@ public struct Mirror {
   /// Playgrounds and the debugger will show a representation similar
   /// to the one used for instances of the kind indicated by the
   /// `DisplayStyle` case name when the mirror is used for display.
-  public enum DisplayStyle {
+  public enum DisplayStyle: Sendable {
     case `struct`, `class`, `enum`, tuple, optional, collection
     case dictionary, `set`
   }

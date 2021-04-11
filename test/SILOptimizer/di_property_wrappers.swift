@@ -1,5 +1,6 @@
 // RUN: %empty-directory(%t) 
 // RUN: %target-build-swift %s -o %t/a.out
+// RUN: %target-codesign %t/a.out
 // RUN: %target-run %t/a.out | %FileCheck %s
 
 // REQUIRES: executable_test
@@ -219,8 +220,8 @@ func testRefStruct() {
     // CHECK-NEXT:   + payload alloc 42
     // CHECK-NEXT:   .. init value = 42
     // CHECK-NEXT:   + payload alloc 27
-    // CHECK-NEXT:   .. set value = 27
     // CHECK-NEXT:   - payload free 42
+    // CHECK-NEXT:   .. set value = 27
     let t1 = RefStruct()
     // CHECK-NEXT: value = 27
     print(t1.wrapped)
@@ -271,8 +272,8 @@ func testGenericClass() {
     // CHECK-NEXT:   + payload alloc 42
     // CHECK-NEXT:   .. init value = 42
     // CHECK-NEXT:   + payload alloc 27
-    // CHECK-NEXT:   .. set value = 27
     // CHECK-NEXT:   - payload free 42
+    // CHECK-NEXT:   .. set value = 27
     let t1 = GenericClass<Payload>()
     // CHECK-NEXT: value = 27
     print(t1.wrapped)
@@ -502,6 +503,110 @@ public final class Synchronized<Value> {
 }
 
 
+struct SR_12341 {
+  @Wrapper var wrapped: Int = 10
+  var str: String
+
+  init() {
+     wrapped = 42
+     str = ""
+     wrapped = 27
+  }
+
+  init(condition: Bool) {
+    wrapped = 42
+    wrapped = 27
+    str = ""
+  }
+}
+
+func testSR_12341() {
+  // CHECK: ## SR_12341
+  print("\n## SR_12341")
+
+  // CHECK-NEXT:   .. init 10
+  // CHECK-NEXT:   .. init 42
+  // CHECK-NEXT:   .. set 27
+  _ = SR_12341()
+
+  // CHECK-NEXT:   .. init 10
+  // CHECK-NEXT:   .. init 42
+  // CHECK-NEXT:   .. init 27
+  _ = SR_12341(condition: true)
+}
+
+@propertyWrapper
+struct NonMutatingSetterWrapper<Value> {
+  var value: Value
+  init(wrappedValue: Value) {
+    print("  .. init \(wrappedValue)")
+    value = wrappedValue
+  }
+  var wrappedValue: Value {
+    get { value }
+    nonmutating set {
+      print("  .. nonmutatingSet \(newValue)")
+    }
+  }
+}
+
+struct NonMutatingWrapperTestStruct {
+  @NonMutatingSetterWrapper var SomeProp: Int
+  init(val: Int) {
+    SomeProp = val
+    SomeProp = val + 1
+  }
+}
+
+// Check if a non-trivial value passes the memory lifetime verifier.
+struct NonMutatingWrapperTestStructString {
+  @NonMutatingSetterWrapper var SomeProp: String
+  init(val: String) {
+    SomeProp = val
+  }
+}
+
+func testNonMutatingSetterStruct() {
+  // CHECK: ## NonMutatingSetterWrapper
+  print("\n## NonMutatingSetterWrapper")
+  let A = NonMutatingWrapperTestStruct(val: 11)
+  // CHECK-NEXT:  .. init 11
+  // CHECK-NEXT:  .. nonmutatingSet 12
+}
+
+@propertyWrapper
+final class ClassWrapper<T> {
+  private var _wrappedValue: T
+  var wrappedValue: T {
+    get { _wrappedValue }
+    set {
+      print(" .. set \(newValue)")
+      _wrappedValue = newValue
+    }
+  }
+
+  init(wrappedValue: T) {
+    print(" .. init \(wrappedValue)")
+    self._wrappedValue = wrappedValue
+  }
+}
+
+struct StructWithClassWrapper<T> {
+   @ClassWrapper private var _storage: T?
+
+   init(value: T?) {
+      _storage = value
+   }
+}
+
+func testStructWithClassWrapper() {
+  // CHECK: ## StructWithClassWrapper
+  print("\n## StructWithClassWrapper")
+  let _ = StructWithClassWrapper<Int>(value: 10)
+  // CHECK-NEXT:  .. init nil
+  // CHECK-NEXT:  .. set Optional(10)
+}
+
 testIntStruct()
 testIntClass()
 testRefStruct()
@@ -511,3 +616,6 @@ testOptIntStruct()
 testDefaultNilOptIntStruct()
 testComposed()
 testWrapperInitWithDefaultArg()
+testSR_12341()
+testNonMutatingSetterStruct()
+testStructWithClassWrapper()

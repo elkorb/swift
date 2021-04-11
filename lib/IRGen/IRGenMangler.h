@@ -15,6 +15,8 @@
 
 #include "IRGenModule.h"
 #include "swift/AST/ASTMangler.h"
+#include "swift/AST/AutoDiff.h"
+#include "swift/AST/ProtocolAssociations.h"
 #include "swift/IRGen/ValueWitness.h"
 #include "llvm/Support/SaveAndRestore.h"
 
@@ -50,6 +52,20 @@ public:
     return finalize();
   }
 
+  std::string mangleDerivativeDispatchThunk(
+      const AbstractFunctionDecl *func,
+      AutoDiffDerivativeFunctionIdentifier *derivativeId) {
+    beginManglingWithAutoDiffOriginalFunction(func);
+    auto kind = Demangle::getAutoDiffFunctionKind(derivativeId->getKind());
+    AutoDiffConfig config(
+        derivativeId->getParameterIndices(),
+        IndexSubset::get(func->getASTContext(), 1, {0}),
+        derivativeId->getDerivativeGenericSignature());
+    appendAutoDiffFunctionParts("TJ", kind, config);
+    appendOperator("Tj");
+    return finalize();
+  }
+
   std::string mangleConstructorDispatchThunk(const ConstructorDecl *ctor,
                                              bool isAllocating) {
     beginMangling();
@@ -61,6 +77,20 @@ public:
   std::string mangleMethodDescriptor(const FuncDecl *func) {
     beginMangling();
     appendEntity(func);
+    appendOperator("Tq");
+    return finalize();
+  }
+
+  std::string mangleDerivativeMethodDescriptor(
+      const AbstractFunctionDecl *func,
+      AutoDiffDerivativeFunctionIdentifier *derivativeId) {
+    beginManglingWithAutoDiffOriginalFunction(func);
+    auto kind = Demangle::getAutoDiffFunctionKind(derivativeId->getKind());
+    AutoDiffConfig config(
+        derivativeId->getParameterIndices(),
+        IndexSubset::get(func->getASTContext(), 1, {0}),
+        derivativeId->getDerivativeGenericSignature());
+    appendAutoDiffFunctionParts("TJ", kind, config);
     appendOperator("Tq");
     return finalize();
   }
@@ -96,6 +126,11 @@ public:
     return mangleTypeSymbol(type, "Ma");
   }
 
+  std::string
+  mangleCanonicalSpecializedGenericTypeMetadataAccessFunction(Type type) {
+    return mangleTypeSymbol(type, "Mb");
+  }
+
   std::string mangleTypeMetadataLazyCacheVariable(Type type) {
     return mangleTypeSymbol(type, "ML");
   }
@@ -112,12 +147,29 @@ public:
     return mangleTypeSymbol(type, "N");
   }
 
+  std::string mangleNoncanonicalTypeMetadata(Type type) {
+    return mangleTypeSymbol(type, "MN");
+  }
+
+  std::string mangleCanonicalPrespecializedGenericTypeCachingOnceToken(
+      const NominalTypeDecl *decl) {
+    return mangleNominalTypeSymbol(decl, "Mz");
+  }
+
+  std::string mangleNoncanonicalSpecializedGenericTypeMetadataCache(Type type) {
+    return mangleTypeSymbol(type, "MJ");
+  }
+
   std::string mangleTypeMetadataPattern(const NominalTypeDecl *decl) {
     return mangleNominalTypeSymbol(decl, "MP");
   }
 
   std::string mangleClassMetaClass(const ClassDecl *Decl) {
     return mangleNominalTypeSymbol(Decl, "Mm");
+  }
+
+  std::string mangleSpecializedGenericClassMetaClass(const CanType theType) {
+    return mangleTypeSymbol(theType, "MM");
   }
 
   std::string mangleObjCMetadataUpdateFunction(const ClassDecl *Decl) {
@@ -305,8 +357,10 @@ public:
   }
 
   std::string mangleProtocolConformanceDescriptor(
-                                   const RootProtocolConformance *conformance);
-  
+                                    const RootProtocolConformance *conformance);
+  std::string mangleProtocolConformanceInstantiationCache(
+                                    const RootProtocolConformance *conformance);
+
   std::string manglePropertyDescriptor(const AbstractStorageDecl *storage) {
     beginMangling();
     appendEntity(storage);
@@ -345,6 +399,25 @@ public:
   std::string mangleProtocolWitnessTableLazyCacheVariable(Type type,
                                                 const ProtocolConformance *C) {
     return mangleConformanceSymbol(type, C, "WL");
+  }
+
+  std::string
+  mangleAssociatedTypeAccessFunctionDiscriminator(AssociatedType association) {
+    beginMangling();
+    appendAnyGenericType(association.getSourceProtocol());
+    appendIdentifier(association.getAssociation()->getNameStr());
+    return finalize();
+  }
+
+  std::string mangleAssociatedTypeWitnessTableAccessFunctionDiscriminator(
+                                           const AssociatedConformance &conf) {
+    beginMangling();
+    appendAnyGenericType(conf.getSourceProtocol());
+    bool isFirstAssociatedTypeIdentifier = true;
+    appendAssociatedTypePath(conf.getAssociation(),
+                             isFirstAssociatedTypeIdentifier);
+    appendAnyGenericType(conf.getAssociatedRequirement());
+    return finalize();
   }
 
   std::string mangleAssociatedTypeWitnessTableAccessFunction(
@@ -410,6 +483,7 @@ public:
   std::string mangleOutlinedCopyFunction(CanType ty,
                                          CanGenericSignature sig) {
     beginMangling();
+    bindGenericParameters(sig);
     appendType(ty);
     if (sig)
       appendGenericSignature(sig);
@@ -419,6 +493,7 @@ public:
   std::string mangleOutlinedConsumeFunction(CanType ty,
                                             CanGenericSignature sig) {
     beginMangling();
+    bindGenericParameters(sig);
     appendType(ty);
     if (sig)
       appendGenericSignature(sig);
@@ -429,6 +504,7 @@ public:
   std::string mangleOutlinedRetainFunction(CanType t,
                                            CanGenericSignature sig) {
     beginMangling();
+    bindGenericParameters(sig);
     appendType(t);
     if (sig)
       appendGenericSignature(sig);
@@ -438,6 +514,7 @@ public:
   std::string mangleOutlinedReleaseFunction(CanType t,
                                             CanGenericSignature sig) {
     beginMangling();
+    bindGenericParameters(sig);
     appendType(t);
     if (sig)
       appendGenericSignature(sig);
@@ -448,6 +525,7 @@ public:
   std::string mangleOutlinedInitializeWithTakeFunction(CanType t,
                                                        CanGenericSignature sig) {
     beginMangling();
+    bindGenericParameters(sig);
     appendType(t);
     if (sig)
       appendGenericSignature(sig);
@@ -457,6 +535,7 @@ public:
   std::string mangleOutlinedInitializeWithCopyFunction(CanType t,
                                                        CanGenericSignature sig) {
     beginMangling();
+    bindGenericParameters(sig);
     appendType(t);
     if (sig)
       appendGenericSignature(sig);
@@ -466,6 +545,7 @@ public:
   std::string mangleOutlinedAssignWithTakeFunction(CanType t,
                                                    CanGenericSignature sig) {
     beginMangling();
+    bindGenericParameters(sig);
     appendType(t);
     if (sig)
       appendGenericSignature(sig);
@@ -475,6 +555,7 @@ public:
   std::string mangleOutlinedAssignWithCopyFunction(CanType t,
                                                    CanGenericSignature sig) {
     beginMangling();
+    bindGenericParameters(sig);
     appendType(t);
     if (sig)
       appendGenericSignature(sig);
@@ -484,6 +565,7 @@ public:
   std::string mangleOutlinedDestroyFunction(CanType t,
                                             CanGenericSignature sig) {
     beginMangling();
+    bindGenericParameters(sig);
     appendType(t);
     if (sig)
       appendGenericSignature(sig);
@@ -498,11 +580,8 @@ public:
   }
 
   SymbolicMangling mangleTypeForReflection(IRGenModule &IGM,
-                                           Type Ty);
-  
-  SymbolicMangling mangleProtocolConformanceForReflection(IRGenModule &IGM,
-                                            Type Ty,
-                                            ProtocolConformanceRef conformance);
+                                           CanGenericSignature genericSig,
+                                           CanType Ty);
 
   std::string mangleTypeForLLVMTypeName(CanType Ty);
 

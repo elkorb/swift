@@ -98,9 +98,9 @@ func joinFunctions(
   //        Any to be inferred for the generic type. That's pretty
   //        arbitrary.
   _ = commonSupertype(escaping, x)
-  // expected-error@-1 {{cannot convert value of type 'Int' to expected argument type '() -> ()'}}
+  // expected-error@-1 {{conflicting arguments to generic parameter 'T' ('() -> ()' vs. 'Int')}}
   _ = commonSupertype(x, escaping)
-  // expected-error@-1 {{cannot convert value of type '() -> ()' to expected argument type 'Int'}}
+  // expected-error@-1 {{conflicting arguments to generic parameter 'T' ('Int' vs. '() -> ()')}}
 
   let a: Any = 1
   _ = commonSupertype(nonescaping, a)
@@ -119,4 +119,15 @@ func rdar37241221(_ a: C?, _ b: D?) {
   let array_c_opt = [c]
   let inferred = [a!, b]
   expectEqualType(type(of: array_c_opt).self, type(of: inferred).self)
+}
+
+extension FixedWidthInteger {
+  public static func test_nonstale_join_result<Other: BinaryInteger>(_ lhs: inout Self, _ rhs: Other) {
+    let shift = rhs < -Self.bitWidth ? -Self.bitWidth
+               : rhs > Self.bitWidth ? Self.bitWidth
+               : Int(rhs) // `shift` is `Int`
+
+    func accepts_int(_: Int) {}
+    accepts_int(shift) // Ok
+  }
 }

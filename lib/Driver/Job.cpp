@@ -10,8 +10,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "swift/Basic/Range.h"
 #include "swift/Basic/STLExtras.h"
-#include "swift/Driver/DriverIncrementalRanges.h"
 #include "swift/Driver/Job.h"
 #include "swift/Driver/PrettyStackTrace.h"
 #include "llvm/ADT/STLExtras.h"
@@ -24,6 +24,11 @@
 
 using namespace swift;
 using namespace swift::driver;
+
+CommandOutput::CommandOutput(StringRef dummyBase, OutputFileMap &dummyOFM)
+    : Inputs({CommandInputPair(dummyBase, "")}), DerivedOutputMap(dummyOFM) {
+  setAdditionalOutputForType(file_types::TY_SwiftDeps, dummyBase);
+}
 
 StringRef CommandOutput::getOutputForInputAndType(StringRef PrimaryInputFile,
                                                   file_types::ID Type) const {
@@ -62,9 +67,9 @@ void CommandOutput::ensureEntry(StringRef PrimaryInputFile,
   assert(Type != file_types::TY_Nothing);
   auto &M = DerivedOutputMap.getOrCreateOutputMapForInput(PrimaryInputFile);
   if (Overwrite) {
-    M[Type] = OutputFile;
+    M[Type] = OutputFile.str();
   } else {
-    auto res = M.insert(std::make_pair(Type, OutputFile));
+    auto res = M.insert(std::make_pair(Type, OutputFile.str()));
     if (res.second) {
       // New entry, no need to compare.
     } else {
@@ -141,7 +146,8 @@ file_types::ID CommandOutput::getPrimaryOutputType() const {
 }
 
 void CommandOutput::addPrimaryOutput(CommandInputPair Input,
-                                     StringRef PrimaryOutputFile) {
+                                     StringRef PrimaryOutputFile,
+                                     StringRef IndexUnitOutputPath) {
   PrettyStackTraceDriverCommandOutputAddition CrashInfo(
     "primary", this, Input.Primary, PrimaryOutputType, PrimaryOutputFile);
   if (PrimaryOutputType == file_types::TY_Nothing) {
@@ -161,6 +167,13 @@ void CommandOutput::addPrimaryOutput(CommandInputPair Input,
   assert(!PrimaryOutputFile.empty());
   assert(AdditionalOutputTypes.count(PrimaryOutputType) == 0);
   ensureEntry(Input.Primary, PrimaryOutputType, PrimaryOutputFile, false);
+
+  // If there is an overriding output path to record in the index store instead
+  // of the primary output path, add it.
+  if (!IndexUnitOutputPath.empty()) {
+    ensureEntry(Input.Primary, file_types::TY_IndexUnitOutputPath,
+                IndexUnitOutputPath, false);
+  }
 }
 
 StringRef CommandOutput::getPrimaryOutputFilename() const {
@@ -181,6 +194,34 @@ SmallVector<StringRef, 16> CommandOutput::getPrimaryOutputFilenames() const {
     assert(!Out.empty() || PrimaryOutputType == file_types::TY_Nothing);
   }
   assert(NonEmpty == 0 || NonEmpty == Inputs.size());
+  return V;
+}
+
+SmallVector<StringRef, 16>
+CommandOutput::getIndexUnitOutputFilenames() const {
+  SmallVector<StringRef, 16> V;
+  size_t NonEmpty = 0;
+  for (auto const &I: Inputs) {
+    auto Out = getOutputForInputAndType(I.Primary,
+                                        file_types::TY_IndexUnitOutputPath);
+    V.push_back(Out);
+    if (!Out.empty())
+      ++NonEmpty;
+  }
+
+  if (!NonEmpty || NonEmpty == V.size()) {
+    if (!NonEmpty)
+      V.clear();
+    return V;
+  }
+
+  auto PrimaryOutputs = getPrimaryOutputFilenames();
+  assert(PrimaryOutputs.size() == V.size());
+
+  for (auto I: indices(V)) {
+    if (V[I].empty())
+      V[I] = PrimaryOutputs[I];
+  }
   return V;
 }
 
@@ -322,7 +363,7 @@ CommandOutput::dump() const {
 
 void CommandOutput::writeOutputFileMap(llvm::raw_ostream &out) const {
   SmallVector<StringRef, 4> inputs;
-  for (const CommandInputPair IP : Inputs) {
+  for (const CommandInputPair &IP : Inputs) {
     assert(IP.Base == IP.Primary && !IP.Base.empty() &&
            "output file maps won't work if these differ");
     inputs.push_back(IP.Primary);
@@ -403,20 +444,16 @@ void Job::printSummary(raw_ostream &os) const {
   }
 
   os << "{" << getSource().getClassName() << ": ";
-  interleave(Outputs,
-             [&](const std::string &Arg) {
-               os << llvm::sys::path::filename(Arg);
-             },
-             [&] { os << ' '; });
+  interleave(
+      Outputs, [&](StringRef Arg) { os << llvm::sys::path::filename(Arg); },
+      [&] { os << ' '; });
   if (actual_out > limit) {
     os << " ... " << (actual_out-limit) << " more";
   }
   os << " <= ";
-  interleave(Inputs,
-             [&](const std::string &Arg) {
-               os << llvm::sys::path::filename(Arg);
-             },
-             [&] { os << ' '; });
+  interleave(
+      Inputs, [&](StringRef Arg) { os << llvm::sys::path::filename(Arg); },
+      [&] { os << ' '; });
   if (actual_in > limit) {
     os << " ... " << (actual_in-limit) << " more";
   }

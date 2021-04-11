@@ -53,7 +53,7 @@ func otherExistential<T : EqualComparable>(_ t1: T) {
   otherEqComp2 = t1 // expected-error{{value of type 'T' does not conform to 'OtherEqualComparable' in assignment}}
   _ = otherEqComp2
 
-  _ = t1 as EqualComparable & OtherEqualComparable // expected-error{{'T' is not convertible to 'EqualComparable & OtherEqualComparable'; did you mean to use 'as!' to force downcast?}} {{10-12=as!}} expected-error{{protocol 'OtherEqualComparable' can only be used as a generic constraint}} expected-error{{protocol 'EqualComparable' can only be used as a generic constraint}}
+  _ = t1 as EqualComparable & OtherEqualComparable // expected-error{{value of type 'T' does not conform to 'EqualComparable & OtherEqualComparable' in coercion}} expected-error{{protocol 'OtherEqualComparable' can only be used as a generic constraint}} expected-error{{protocol 'EqualComparable' can only be used as a generic constraint}}
 }
 
 protocol Runcible {
@@ -131,7 +131,7 @@ protocol Subscriptable {
   func getIndex() -> Index
   func getValue() -> Value
 
-  subscript (index : Index) -> Value { get set }
+  subscript (index : Index) -> Value { get set } // expected-note {{found this candidate}}
 }
 
 protocol IntSubscriptable {
@@ -139,7 +139,7 @@ protocol IntSubscriptable {
 
   func getElement() -> ElementType
 
-  subscript (index : Int) -> ElementType { get  }
+  subscript (index : Int) -> ElementType { get  } // expected-note {{found this candidate}}
 }
 
 func subscripting<T : Subscriptable & IntSubscriptable>(_ t: T) {
@@ -152,9 +152,7 @@ func subscripting<T : Subscriptable & IntSubscriptable>(_ t: T) {
   element = t[17]
   t[42] = element // expected-error{{cannot assign through subscript: subscript is get-only}}
 
-  // Suggests the Int form because we prefer concrete matches to generic matches in diagnosis.
-  t[value] = 17 // expected-error{{cannot convert value of type 'T.Value' to expected argument type 'Int'}}
-  // expected-error@-1 {{cannot assign value of type 'Int' to subscript of type 'T.ElementType'}}
+  t[value] = 17 // expected-error{{no exact matches in call to subscript}}
 }
 
 //===----------------------------------------------------------------------===//
@@ -282,17 +280,17 @@ func beginsWith3<S0: P2, S1: P2>(_ seq1: S0, _ seq2: S1) -> Bool
 //===----------------------------------------------------------------------===//
 // Bogus requirements
 //===----------------------------------------------------------------------===//
-func nonTypeReq<T>(_: T) where T : Wibble {} // expected-error{{use of undeclared type 'Wibble'}}
+func nonTypeReq<T>(_: T) where T : Wibble {} // expected-error{{cannot find type 'Wibble' in scope}}
 func badProtocolReq<T>(_: T) where T : Int {} // expected-error{{type 'T' constrained to non-protocol, non-class type 'Int'}}
 
-func nonTypeSameType<T>(_: T) where T == Wibble {} // expected-error{{use of undeclared type 'Wibble'}}
-func nonTypeSameType2<T>(_: T) where Wibble == T {} // expected-error{{use of undeclared type 'Wibble'}}
+func nonTypeSameType<T>(_: T) where T == Wibble {} // expected-error{{cannot find type 'Wibble' in scope}}
+func nonTypeSameType2<T>(_: T) where Wibble == T {} // expected-error{{cannot find type 'Wibble' in scope}}
 func sameTypeEq<T>(_: T) where T = T {} // expected-error{{use '==' for same-type requirements rather than '='}} {{34-35===}}
 // expected-warning@-1{{redundant same-type constraint 'T' == 'T'}}
 
 func badTypeConformance1<T>(_: T) where Int : EqualComparable {} // expected-error{{type 'Int' in conformance requirement does not refer to a generic parameter or associated type}}
 
-func badTypeConformance2<T>(_: T) where T.Blarg : EqualComparable { } // expected-error{{'Blarg' is not a member type of 'T'}}
+func badTypeConformance2<T>(_: T) where T.Blarg : EqualComparable { } // expected-error{{'Blarg' is not a member type of type 'T'}}
 
 func badTypeConformance3<T>(_: T) where (T) -> () : EqualComparable { }
 // expected-error@-1{{type '(T) -> ()' in conformance requirement does not refer to a generic parameter or associated type}}
@@ -310,7 +308,7 @@ func badTypeConformance6<T>(_: T) where [T] : Collection { }
 // expected-error@-1{{type '[T]' in conformance requirement does not refer to a generic parameter or associated type}}
 
 func badTypeConformance7<T, U>(_: T, _: U) where T? : U { }
-// expected-error@-1{{type 'T?' constrained to non-protocol, non-class type 'U'}}
+// expected-error@-1{{type 'T?' in conformance requirement does not refer to a generic parameter or associated type}}
 
 func badSameType<T, U : GeneratesAnElement, V>(_ : T, _ : U)
   where T == U.Element, U.Element == V {} // expected-error{{same-type requirement makes generic parameters 'T' and 'V' equivalent}}

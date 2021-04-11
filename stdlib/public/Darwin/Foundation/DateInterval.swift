@@ -11,7 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 @_exported import Foundation // Clang module
-import _SwiftCoreFoundationOverlayShims
+@_implementationOnly import _SwiftCoreFoundationOverlayShims
 
 /// DateInterval represents a closed date interval in the form of [startDate, endDate].  It is possible for the start and end dates to be the same with a duration of 0.  DateInterval does not support reverse intervals i.e. intervals where the duration is less than 0 and the end date occurs earlier in time than the start date.
 @available(macOS 10.12, iOS 10.0, watchOS 3.0, tvOS 10.0, *)
@@ -145,8 +145,8 @@ public struct DateInterval : ReferenceConvertible, Comparable, Hashable, Codable
     public func contains(_ date: Date) -> Bool {
         let timeIntervalForGivenDate = date.timeIntervalSinceReferenceDate
         let timeIntervalForSelfStart = start.timeIntervalSinceReferenceDate
-        let timeIntervalforSelfEnd = end.timeIntervalSinceReferenceDate
-        if (timeIntervalForGivenDate >= timeIntervalForSelfStart) && (timeIntervalForGivenDate <= timeIntervalforSelfEnd) {
+        let timeIntervalForSelfEnd = end.timeIntervalSinceReferenceDate
+        if (timeIntervalForGivenDate >= timeIntervalForSelfStart) && (timeIntervalForGivenDate <= timeIntervalForSelfEnd) {
             return true
         }
         return false

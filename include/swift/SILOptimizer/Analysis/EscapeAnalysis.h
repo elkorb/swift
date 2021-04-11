@@ -164,7 +164,6 @@
 #include "swift/SILOptimizer/Analysis/BottomUpIPAnalysis.h"
 #include "swift/SILOptimizer/Analysis/ValueTracking.h"
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallBitVector.h"
 #include "llvm/ADT/SmallVector.h"
 
@@ -225,26 +224,6 @@ class EscapeAnalysis : public BottomUpIPAnalysis {
     Return
   };
 
-  /// Indicates to what a value escapes. Note: the order of values is important.
-  enum class EscapeState : char {
-
-    /// The node's value does not escape.
-    /// The value points to a locally allocated object who's lifetime ends in
-    /// the same function.
-    None,
-    
-    /// The node's value escapes through the return value.
-    /// The value points to a locally allocated object which escapes via the
-    /// return instruction.
-    Return,
-
-    /// The node's value escapes through a function argument.
-    Arguments,
-
-    /// The node's value escapes to any global or unidentified memory.
-    Global
-  };
-
   // Must be ordered from most precise to least precise. A meet across memory
   // locations (such as aggregate fields) always moves down.
   enum PointerKind { NoPointer, ReferenceOnly, AnyPointer };
@@ -276,6 +255,27 @@ private:
   };
 
 public:
+  
+  /// Indicates to what a value escapes. Note: the order of values is important.
+  enum class EscapeState : char {
+
+    /// The node's value does not escape.
+    /// The value points to a locally allocated object who's lifetime ends in
+    /// the same function.
+    None,
+    
+    /// The node's value escapes through the return value.
+    /// The value points to a locally allocated object which escapes via the
+    /// return instruction.
+    Return,
+
+    /// The node's value escapes through a function argument.
+    Arguments,
+
+    /// The node's value escapes to any global or unidentified memory.
+    Global
+  };
+
 
   /// A node in the connection graph.
   /// A node basically represents a "pointer" or the "memory content" where a
@@ -449,7 +449,7 @@ public:
 
     /// Sets the outgoing points-to edge. The \p To node must be a Content node.
     void setPointsToEdge(CGNode *To) {
-      assert(!To->mergeTo);
+      assert(!To->isMerged);
       assert(To->Type == NodeType::Content &&
              "Wrong node type for points-to edge");
       pointsToIsEdge = true;
@@ -652,6 +652,9 @@ public:
     /// True if this is a summary graph.
     bool isSummaryGraph;
 
+    /// True if the graph could be computed.
+    bool valid = true;
+
     /// Track the currently active intrusive worklist -- one at a time.
     CGNodeWorklist *activeWorklist = nullptr;
 
@@ -660,7 +663,7 @@ public:
         : F(F), EA(EA), isSummaryGraph(isSummaryGraph) {}
 
     /// Returns true if the connection graph is empty.
-    bool isEmpty() {
+    bool isEmpty() const {
       return Values2Nodes.empty() && Nodes.empty() && UsePoints.empty();
     }
 
@@ -672,10 +675,10 @@ public:
     /// isInterior is always false for non-content nodes and is set for content
     /// nodes based on the type and origin of the pointer.
     CGNode *allocNode(ValueBase *V, NodeType Type, bool isInterior,
-                      bool isReference) {
+                      bool hasReferenceOnly) {
       assert((Type == NodeType::Content) || !isInterior);
       CGNode *Node = new (NodeAllocator.Allocate())
-          CGNode(V, Type, isInterior, isReference);
+          CGNode(V, Type, isInterior, hasReferenceOnly);
       Nodes.push_back(Node);
       return Node;
     }
@@ -688,7 +691,6 @@ public:
       CGNode *FromMergeTarget = From->getMergeTarget();
       CGNode *ToMergeTarget = To->getMergeTarget();
       if (FromMergeTarget != ToMergeTarget) {
-        ToMergeTarget->mergeProperties(FromMergeTarget);
         FromMergeTarget->mergeTo = ToMergeTarget;
         ToMerge.push_back(FromMergeTarget);
       }
@@ -722,15 +724,12 @@ public:
       }
     }
 
-    // Helper for getNode and getValueContent.
-    CGNode *getOrCreateNode(ValueBase *V, PointerKind pointerKind);
-
     /// Gets or creates a node for a value \p V.
     /// If V is a projection(-path) then the base of the projection(-path) is
     /// taken. This means the node is always created for the "outermost" value
     /// where V is contained.
-    /// Returns null, if V is not a "pointer".
-    CGNode *getNode(ValueBase *V, bool createIfNeeded = true);
+    /// Returns null, if V (or its base value) is not a "pointer".
+    CGNode *getNode(SILValue V);
 
     // Helper for getValueContent to create and return a content node with the
     // given \p isInterior and \p hasReferenceOnly flags. \p addrNode
@@ -781,15 +780,6 @@ public:
       return ReturnNode;
     }
 
-    /// Returns the node of the "exact" value \p V (no projections are skipped)
-    /// if one exists.
-    CGNode *lookupNode(ValueBase *V) {
-      CGNode *Node = Values2Nodes.lookup(V);
-      if (Node)
-        return Node->getMergeTarget();
-      return nullptr;
-    }
-    
     /// Re-uses a node for another SIL value.
     void setNode(ValueBase *V, CGNode *Node) {
       assert(Values2Nodes.find(V) == Values2Nodes.end());
@@ -871,18 +861,23 @@ public:
     template <typename CGNodeVisitor>
     bool forwardTraverseDefer(CGNode *startNode, CGNodeVisitor &&visitor);
 
-    /// Return true if \p pointer may indirectly point to \pointee via pointers
-    /// and object references.
-    bool mayReach(CGNode *pointer, CGNode *pointee);
-
   public:
-    /// Gets or creates a node for a value \p V.
-    /// If V is a projection(-path) then the base of the projection(-path) is
-    /// taken. This means the node is always created for the "outermost" value
-    /// where V is contained.
-    /// Returns null, if V is not a "pointer".
-    CGNode *getNodeOrNull(ValueBase *V) { return getNode(V, false); }
-
+  
+    /// Returns true if the graph could be computed.
+    ///
+    /// For very large functions (> 10000 nodes), graphs are not cumputed to
+    /// avoid quadratic complexity of the node merging algorithm.
+    bool isValid() const {
+      assert((valid || isEmpty()) && "invalid graph must not contain nodes");
+      return valid;
+    }
+    
+    /// Invalides the graph in case it's getting too large.
+    void invalidate() {
+      clear();
+      valid = false;
+    }
+  
     /// Get the content node pointed to by \p ptrVal.
     ///
     /// If \p ptrVal cannot be mapped to a node, return nullptr.
@@ -930,11 +925,10 @@ public:
     /// Dump the connection graph to a DOT file for remote debugging.
     void dumpCG() const;
 
-    /// Checks if the graph is OK.
-    void verify(bool allowMerge = false) const;
+    /// Checks if the graph is valid and complete.
+    void verify() const;
 
-    /// Just verifies the graph structure. This function can also be called
-    /// during the graph is modified, e.g. in mergeAllScheduledNodes().
+    /// Just verifies the graph nodes.
     void verifyStructure(bool allowMerge = false) const;
 
     friend struct ::CGForDotView;
@@ -995,8 +989,13 @@ private:
   /// The allocator for the connection graphs in Function2ConGraph.
   llvm::SpecificBumpPtrAllocator<FunctionInfo> Allocator;
 
+  // TODO: Use per-function caches, at least for Resilient types, to use Maximal
+  // expansion.
+
   /// Cache for isPointer().
   PointerKindCache pointerKindCache;
+  /// Cache for checking the aggregate pointerness of class properties.
+  PointerKindCache classPropertiesKindCache;
 
   SILModule *M;
 
@@ -1019,6 +1018,12 @@ private:
   PointerKind findRecursivePointerKind(SILType Ty, const SILFunction &F) const;
 
   PointerKind findCachedPointerKind(SILType Ty, const SILFunction &F) const;
+
+  PointerKind findClassPropertiesPointerKind(SILType Ty,
+                                             const SILFunction &F) const;
+
+  PointerKind findCachedClassPropertiesKind(SILType Ty,
+                                            const SILFunction &F) const;
 
   // Returns true if the type \p Ty must be a reference or must transitively
   // contain a reference and no other pointer or address type.
@@ -1069,8 +1074,8 @@ private:
 
   /// If \p ai is an optimizable @_semantics("array.uninitialized") call, return
   /// valid call information.
-  ArrayUninitCall canOptimizeArrayUninitializedCall(ApplyInst *ai,
-                                                    ConnectionGraph *conGraph);
+  ArrayUninitCall
+  canOptimizeArrayUninitializedCall(ApplyInst *ai);
 
   /// Return true of this tuple_extract is the result of an optimizable
   /// @_semantics("array.uninitialized") call.
@@ -1120,6 +1125,10 @@ private:
   bool canEscapeToUsePoint(SILValue value, SILInstruction *usePoint,
                            ConnectionGraph *conGraph);
 
+  /// Common implementation for mayReleaseReferenceContent and
+  /// mayReleaseAddressContent.
+  bool mayReleaseContent(SILValue releasedPtr, SILValue liveAddress);
+
   friend struct ::CGForDotView;
 
 public:
@@ -1164,16 +1173,50 @@ public:
   /// Note that if \p RI is a retain-instruction always false is returned.
   bool canEscapeTo(SILValue V, RefCountingInst *RI);
 
-  /// Returns true if the value \p V can escape to any other pointer \p To.
-  /// This means that either \p To is the same as \p V or contains a reference
-  /// to \p V.
-  bool canEscapeToValue(SILValue V, SILValue To);
+  /// Returns true if the value \p V can escape to the destroy_value instruction
+  /// \p DVI.
+  bool canEscapeTo(SILValue V, DestroyValueInst *DVI);
+
+  /// Return true if \p releasedReference deinitialization may release memory
+  /// pointed to by \p liveAddress.
+  ///
+  /// This determines whether a direct release of \p releasedReference, such as
+  /// destroy_value or strong_release may release memory pointed to by \p
+  /// liveAddress. It can also be used to determine whether passing a
+  /// reference-type call argument may release \p liveAddress.
+  ///
+  /// This does not distinguish between a call that releases \p
+  /// releasedReference directly, vs. a call that releases one of indirect
+  /// references.The side effects of releasing any object reachable from \p
+  /// releasedReference are a strict subset of the side effects of directly
+  /// releasing the parent reference.
+  bool mayReleaseReferenceContent(SILValue releasedReference,
+                                  SILValue liveAddress) {
+    assert(!releasedReference->getType().isAddress() &&
+           "expected a potentially nontrivial value, not an address");
+    return mayReleaseContent(releasedReference, liveAddress);
+  }
+
+  /// Return true if accessing memory at \p accessedAddress may release memory
+  /// pointed to by \p liveAddress.
+  ///
+  /// This makes sense for determining whether accessing indirect call argument
+  /// \p accessedAddress may release memory pointed to by \p liveAddress.
+  ///
+  /// "Access" to the memory can be any release of a reference pointed to by \p
+  /// accessedAddress, so '@in' and '@inout' are handled the same.
+  bool mayReleaseAddressContent(SILValue accessedAddress,
+                                SILValue liveAddress) {
+    assert(accessedAddress->getType().isAddress() && "expected an address");
+    return mayReleaseContent(accessedAddress, liveAddress);
+  }
 
   /// Returns true if the pointers \p V1 and \p V2 can possibly point to the
   /// same memory.
   ///
-  /// If at least one of the pointers refers to a local object and the
-  /// connection-graph-nodes of both pointers do not point to the same content
+  /// First checks that the pointers are known not to alias outside this
+  /// function, then checks the connection graph to determine that their content
+  /// is not in the same points-to chain based on access inside this function.
   bool canPointToSameMemory(SILValue V1, SILValue V2);
 
   /// Invalidate all information in this analysis.
@@ -1198,25 +1241,9 @@ public:
 
   virtual bool needsNotifications() override { return true; }
 
-  virtual void verify() const override {
-#ifndef NDEBUG
-    for (auto Iter : Function2Info) {
-      FunctionInfo *FInfo = Iter.second;
-      FInfo->Graph.verify();
-      FInfo->SummaryGraph.verify();
-    }
-#endif
-  }
+  virtual void verify() const override;
 
-  virtual void verify(SILFunction *F) const override {
-#ifndef NDEBUG
-    if (FunctionInfo *FInfo = Function2Info.lookup(F)) {
-      FInfo->Graph.verify();
-      FInfo->SummaryGraph.verify();
-    }
-#endif
-  }
-
+  virtual void verify(SILFunction *F) const override;
 };
 
 } // end namespace swift

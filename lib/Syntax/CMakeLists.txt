@@ -5,12 +5,12 @@ else()
 endif()
 
 add_swift_host_library(swiftSyntax STATIC
+  AbsoluteRawSyntax.cpp
   RawSyntax.cpp
   Syntax.cpp
   SyntaxData.cpp
-  UnknownSyntax.cpp
-
-  GYB_SOURCES
+  UnknownSyntax.cpp)
+_swift_gyb_target_sources(swiftSyntax PRIVATE
     SyntaxNodes.cpp.gyb
     SyntaxBuilders.cpp.gyb
     SyntaxKind.cpp.gyb
@@ -18,3 +18,5 @@ add_swift_host_library(swiftSyntax STATIC
     SyntaxVisitor.cpp.gyb
     Trivia.cpp.gyb
     SyntaxSerialization.cpp.gyb)
+target_link_libraries(swiftSyntax PRIVATE
+  swiftParse)

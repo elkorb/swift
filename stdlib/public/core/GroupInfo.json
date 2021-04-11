@@ -165,8 +165,10 @@
     "Floating": [
       "FloatingPoint.swift",
       "FloatingPointParsing.swift",
-      "FloatingPointTypes.swift"],
+      "FloatingPointTypes.swift",
+      "FloatingPointRandom.swift"],
     "Vector": [
+      "SIMDConcreteOperations.swift",
       "SIMDVector.swift",
       "SIMDVectorTypes.swift"]}
   ],
@@ -197,6 +199,7 @@
   ],
   "Misc": [
     "AtomicInt.swift",
+    "Sendable.swift",
     "ErrorType.swift",
     "Identifiable.swift",
     "InputStream.swift",
@@ -206,6 +209,7 @@
     "OptionSet.swift",
     "OutputStream.swift",
     "Policy.swift",
+    "Prespecialize.swift",
     "Print.swift",
     "REPL.swift",
     "Random.swift",
@@ -223,7 +227,8 @@
     "Comparable.swift",
     "Codable.swift",
     "LegacyABI.swift",
-    "MigrationSupport.swift"
+    "MigrationSupport.swift",
+    "PtrAuth.swift"
   ],
   "Result": [
     "Result.swift"

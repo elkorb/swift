@@ -649,13 +649,14 @@ emitBuiltinCastReference(SILGenFunction &SGF,
   auto &toTL = SGF.getTypeLowering(toTy);
   assert(!fromTL.isTrivial() && !toTL.isTrivial() && "expected ref type");
 
+  auto arg = args[0];
+
   // TODO: Fix this API.
   if (!fromTL.isAddress() || !toTL.isAddress()) {
-    if (auto refCast = SGF.B.tryCreateUncheckedRefCast(loc, args[0],
-                                                       toTL.getLoweredType())) {
+    if (SILType::canRefCast(arg.getType(), toTL.getLoweredType(), SGF.SGM.M)) {
       // Create a reference cast, forwarding the cleanup.
       // The cast takes the source reference.
-      return refCast;
+      return SGF.B.createUncheckedRefCast(loc, arg, toTL.getLoweredType());
     }
   }
 
@@ -670,7 +671,7 @@ emitBuiltinCastReference(SILGenFunction &SGF,
   // TODO: For now, we leave invalid casts in address form so that the runtime
   // will trap. We could emit a noreturn call here instead which would provide
   // more information to the optimizer.
-  SILValue srcVal = args[0].ensurePlusOne(SGF, loc).forward(SGF);
+  SILValue srcVal = arg.ensurePlusOne(SGF, loc).forward(SGF);
   SILValue fromAddr;
   if (!fromTL.isAddress()) {
     // Move the loadable value into a "source temp".  Since the source and
@@ -745,17 +746,9 @@ static ManagedValue emitBuiltinReinterpretCast(SILGenFunction &SGF,
   }
   // Create the appropriate bitcast based on the source and dest types.
   ManagedValue in = args[0];
+
   SILType resultTy = toTL.getLoweredType();
-  if (resultTy.isTrivial(SGF.F))
-    return SGF.B.createUncheckedTrivialBitCast(loc, in, resultTy);
-
-  // If we can perform a ref cast, just return.
-  if (auto refCast = SGF.B.tryCreateUncheckedRefCast(loc, in, resultTy))
-    return refCast;
-
-  // Otherwise leave the original cleanup and retain the cast value.
-  SILValue out = SGF.B.createUncheckedBitwiseCast(loc, in.getValue(), resultTy);
-  return SGF.emitManagedRetain(loc, out, toTL);
+  return SGF.B.createUncheckedBitCast(loc, in, resultTy);
 }
 
 /// Specialized emitter for Builtin.castToBridgeObject.
@@ -908,6 +901,60 @@ emitBuiltinIsUnique_native(SILGenFunction &SGF,
   return ManagedValue::forUnmanaged(result);
 }
 
+static ManagedValue
+emitBuiltinBeginCOWMutation(SILGenFunction &SGF,
+                            SILLocation loc,
+                            SubstitutionMap subs,
+                            ArrayRef<ManagedValue> args,
+                            SGFContext C) {
+
+  assert(subs.getReplacementTypes().size() == 1 &&
+         "BeginCOWMutation should have one sub.");
+  assert(args.size() == 1 && "isUnique_native should have one arg.");
+
+  SILValue refAddr = args[0].getValue();
+  auto *ref = SGF.B.createLoad(loc, refAddr, LoadOwnershipQualifier::Take);
+  BeginCOWMutationInst *beginCOW = SGF.B.createBeginCOWMutation(loc, ref, /*isNative*/ false);
+  SGF.B.createStore(loc, beginCOW->getBufferResult(), refAddr, StoreOwnershipQualifier::Init);
+  return ManagedValue::forUnmanaged(beginCOW->getUniquenessResult());
+}
+
+static ManagedValue
+emitBuiltinBeginCOWMutation_native(SILGenFunction &SGF,
+                            SILLocation loc,
+                            SubstitutionMap subs,
+                            ArrayRef<ManagedValue> args,
+                            SGFContext C) {
+
+  assert(subs.getReplacementTypes().size() == 1 &&
+         "BeginCOWMutation should have one sub.");
+  assert(args.size() == 1 && "isUnique_native should have one arg.");
+
+  SILValue refAddr = args[0].getValue();
+  auto *ref = SGF.B.createLoad(loc, refAddr, LoadOwnershipQualifier::Take);
+  BeginCOWMutationInst *beginCOW = SGF.B.createBeginCOWMutation(loc, ref, /*isNative*/ true);
+  SGF.B.createStore(loc, beginCOW->getBufferResult(), refAddr, StoreOwnershipQualifier::Init);
+  return ManagedValue::forUnmanaged(beginCOW->getUniquenessResult());
+}
+
+static ManagedValue
+emitBuiltinEndCOWMutation(SILGenFunction &SGF,
+                           SILLocation loc,
+                           SubstitutionMap subs,
+                           ArrayRef<ManagedValue> args,
+                           SGFContext C) {
+
+  assert(subs.getReplacementTypes().size() == 1 &&
+         "EndCOWMutation should have one sub.");
+  assert(args.size() == 1 && "isUnique_native should have one arg.");
+
+  SILValue refAddr = args[0].getValue();
+  auto ref = SGF.B.createLoad(loc, refAddr, LoadOwnershipQualifier::Take);
+  auto endRef = SGF.B.createEndCOWMutation(loc, ref);
+  SGF.B.createStore(loc, endRef, refAddr, StoreOwnershipQualifier::Init);
+  return ManagedValue::forUnmanaged(SGF.emitEmptyTuple(loc));
+}
+
 static ManagedValue emitBuiltinBindMemory(SILGenFunction &SGF,
                                           SILLocation loc,
                                           SubstitutionMap subs,
@@ -1030,6 +1077,159 @@ static ManagedValue emitBuiltinTypeTrait(SILGenFunction &SGF,
   return ManagedValue::forUnmanaged(val);
 }
 
+static ManagedValue emitBuiltinAutoDiffApplyDerivativeFunction(
+    AutoDiffDerivativeFunctionKind kind, unsigned arity,
+    bool throws, SILGenFunction &SGF, SILLocation loc,
+    SubstitutionMap substitutions, ArrayRef<ManagedValue> args, SGFContext C) {
+  // FIXME(SR-11853): Support throwing functions.
+  assert(!throws && "Throwing functions are not yet supported");
+
+  auto origFnVal = args[0].getValue();
+  SmallVector<SILValue, 2> origFnArgVals;
+  for (auto& arg : args.drop_front(1))
+    origFnArgVals.push_back(arg.getValue());
+
+  auto origFnType = origFnVal->getType().castTo<SILFunctionType>();
+  auto origFnUnsubstType = origFnType->getUnsubstitutedType(SGF.getModule());
+  if (origFnType != origFnUnsubstType) {
+    origFnVal = SGF.B.createConvertFunction(
+        loc, origFnVal, SILType::getPrimitiveObjectType(origFnUnsubstType),
+        /*withoutActuallyEscaping*/ false);
+  }
+
+  // Get the derivative function.
+  SILValue derivativeFn = SGF.B.createDifferentiableFunctionExtract(
+      loc, kind, origFnVal);
+  auto derivativeFnType = derivativeFn->getType().castTo<SILFunctionType>();
+  assert(derivativeFnType->getNumResults() == 2);
+  assert(derivativeFnType->getNumParameters() == origFnArgVals.size());
+
+  auto derivativeFnUnsubstType =
+      derivativeFnType->getUnsubstitutedType(SGF.getModule());
+  if (derivativeFnType != derivativeFnUnsubstType) {
+    derivativeFn = SGF.B.createConvertFunction(
+        loc, derivativeFn,
+        SILType::getPrimitiveObjectType(derivativeFnUnsubstType),
+        /*withoutActuallyEscaping*/ false);
+  }
+
+  // We don't need to destroy the original function or retain the
+  // `derivativeFn`, because they are trivial (because they are @noescape).
+  assert(origFnVal->getType().isTrivial(SGF.F));
+  assert(derivativeFn->getType().isTrivial(SGF.F));
+
+  // Do the apply for the indirect result case.
+  if (derivativeFnType->hasIndirectFormalResults()) {
+    auto indResBuffer = SGF.getBufferForExprResult(
+        loc, derivativeFnType->getAllResultsInterfaceType(), C);
+    SmallVector<SILValue, 3> applyArgs;
+    applyArgs.push_back(SGF.B.createTupleElementAddr(loc, indResBuffer, 0));
+    for (auto origFnArgVal : origFnArgVals)
+      applyArgs.push_back(origFnArgVal);
+    auto differential = SGF.B.createApply(loc, derivativeFn, SubstitutionMap(),
+                                          applyArgs);
+
+    derivativeFn = SILValue();
+
+    SGF.B.createStore(loc, differential,
+                      SGF.B.createTupleElementAddr(loc, indResBuffer, 1),
+                      StoreOwnershipQualifier::Init);
+    return SGF.manageBufferForExprResult(
+        indResBuffer, SGF.getTypeLowering(indResBuffer->getType()), C);
+  }
+
+  // Do the apply for the direct result case.
+  auto resultTuple = SGF.B.createApply(
+      loc, derivativeFn, SubstitutionMap(), origFnArgVals);
+
+  derivativeFn = SILValue();
+
+  return SGF.emitManagedRValueWithCleanup(resultTuple);
+}
+
+static ManagedValue emitBuiltinAutoDiffApplyTransposeFunction(
+    unsigned arity, bool throws, SILGenFunction &SGF, SILLocation loc,
+    SubstitutionMap substitutions, ArrayRef<ManagedValue> args, SGFContext C) {
+  // FIXME(SR-11853): Support throwing functions.
+  assert(!throws && "Throwing functions are not yet supported");
+
+  auto origFnVal = args.front().getValue();
+  SmallVector<SILValue, 2> origFnArgVals;
+  for (auto &arg : args.drop_front(1))
+    origFnArgVals.push_back(arg.getValue());
+
+  // Get the transpose function.
+  SILValue transposeFn = SGF.B.createLinearFunctionExtract(
+      loc, LinearDifferentiableFunctionTypeComponent::Transpose, origFnVal);
+  auto transposeFnType = transposeFn->getType().castTo<SILFunctionType>();
+  auto transposeFnUnsubstType =
+      transposeFnType->getUnsubstitutedType(SGF.getModule());
+  if (transposeFnType != transposeFnUnsubstType) {
+    transposeFn = SGF.B.createConvertFunction(
+        loc, transposeFn,
+        SILType::getPrimitiveObjectType(transposeFnUnsubstType),
+        /*withoutActuallyEscaping*/ false);
+    transposeFnType = transposeFn->getType().castTo<SILFunctionType>();
+  }
+
+  SmallVector<SILValue, 2> applyArgs;
+  if (transposeFnType->hasIndirectFormalResults())
+    applyArgs.push_back(
+        SGF.getBufferForExprResult(
+            loc, transposeFnType->getAllResultsInterfaceType(), C));
+  for (auto paramArg : args.drop_front()) {
+    applyArgs.push_back(paramArg.getValue());
+  }
+  auto *apply = SGF.B.createApply(
+      loc, transposeFn, SubstitutionMap(), applyArgs);
+  if (transposeFnType->hasIndirectFormalResults()) {
+    auto resultAddress = applyArgs.front();
+    AbstractionPattern pattern(
+        SGF.F.getLoweredFunctionType()->getSubstGenericSignature(),
+        resultAddress->getType().getASTType());
+    auto &tl =
+        SGF.getTypeLowering(pattern, resultAddress->getType().getASTType());
+    return SGF.manageBufferForExprResult(resultAddress, tl, C);
+  } else {
+    return SGF.emitManagedRValueWithCleanup(apply);
+  }
+}
+
+static ManagedValue emitBuiltinApplyDerivative(
+    SILGenFunction &SGF, SILLocation loc, SubstitutionMap substitutions,
+    ArrayRef<ManagedValue> args, SGFContext C) {
+  auto *callExpr = loc.castToASTNode<CallExpr>();
+  auto builtinDecl = cast<FuncDecl>(cast<DeclRefExpr>(
+      cast<DotSyntaxBaseIgnoredExpr>(callExpr->getDirectCallee())->getRHS())
+          ->getDecl());
+  const auto builtinName = builtinDecl->getBaseIdentifier().str();
+  AutoDiffDerivativeFunctionKind kind;
+  unsigned arity;
+  bool throws;
+  auto successfullyParsed = autodiff::getBuiltinApplyDerivativeConfig(
+      builtinName, kind, arity, throws);
+  assert(successfullyParsed);
+  return emitBuiltinAutoDiffApplyDerivativeFunction(
+      kind, arity, throws, SGF, loc, substitutions, args, C);
+}
+
+static ManagedValue emitBuiltinApplyTranspose(
+    SILGenFunction &SGF, SILLocation loc, SubstitutionMap substitutions,
+    ArrayRef<ManagedValue> args, SGFContext C) {
+  auto *callExpr = loc.castToASTNode<CallExpr>();
+  auto builtinDecl = cast<FuncDecl>(cast<DeclRefExpr>(
+      cast<DotSyntaxBaseIgnoredExpr>(callExpr->getDirectCallee())->getRHS())
+          ->getDecl());
+  const auto builtinName = builtinDecl->getBaseIdentifier().str();
+  unsigned arity;
+  bool throws;
+  auto successfullyParsed = autodiff::getBuiltinApplyTransposeConfig(
+      builtinName, arity, throws);
+  assert(successfullyParsed);
+  return emitBuiltinAutoDiffApplyTransposeFunction(
+      arity, throws, SGF, loc, substitutions, args, C);
+}
+
 /// Emit SIL for the named builtin: globalStringTablePointer. Unlike the default
 /// ownership convention for named builtins, which is to take (non-trivial)
 /// arguments as Owned, this builtin accepts owned as well as guaranteed
@@ -1052,6 +1252,359 @@ emitBuiltinGlobalStringTablePointer(SILGenFunction &SGF, SILLocation loc,
   return SGF.emitManagedRValueWithCleanup(resultVal);
 }
 
+/// Emit SIL for the named builtin:
+/// convertStrongToUnownedUnsafe. Unlike the default ownership
+/// convention for named builtins, which is to take (non-trivial)
+/// arguments as Owned, this builtin accepts owned as well as
+/// guaranteed arguments, and hence doesn't require the arguments to
+/// be at +1. Therefore, this builtin is emitted specially.
+///
+/// We assume our convention is (T, @inout @unmanaged T) -> ()
+static ManagedValue emitBuiltinConvertStrongToUnownedUnsafe(
+    SILGenFunction &SGF, SILLocation loc, SubstitutionMap subs,
+    PreparedArguments &&preparedArgs, SGFContext C) {
+  auto argsOrError = decomposeArguments(SGF, loc, std::move(preparedArgs), 2);
+  if (!argsOrError)
+    return ManagedValue::forUnmanaged(SGF.emitEmptyTuple(loc));
+
+  auto args = *argsOrError;
+
+  // First get our object at +0 if we can.
+  auto object = SGF.emitRValue(args[0], SGFContext::AllowGuaranteedPlusZero)
+                    .getAsSingleValue(SGF, args[0]);
+
+  // Borrow it and get the value.
+  SILValue objectSrcValue = object.borrow(SGF, loc).getValue();
+
+  // Then create our inout.
+  auto inout = cast<InOutExpr>(args[1]->getSemanticsProvidingExpr());
+  auto lv =
+      SGF.emitLValue(inout->getSubExpr(), SGFAccessKind::BorrowedAddressRead);
+  lv.unsafelyDropLastComponent(PathComponent::OwnershipKind);
+  if (!lv.isPhysical() || !lv.isLoadingPure()) {
+    llvm::report_fatal_error("Builtin.convertStrongToUnownedUnsafe passed "
+                             "non-physical, non-pure lvalue as 2nd arg");
+  }
+
+  SILValue inoutDest =
+      SGF.emitAddressOfLValue(args[1], std::move(lv)).getLValueAddress();
+  SILType destType = inoutDest->getType().getObjectType();
+
+  // Make sure our types match up as we expect.
+  if (objectSrcValue->getType() !=
+      destType.getReferenceStorageReferentType().getObjectType()) {
+    llvm::errs()
+        << "Invalid usage of Builtin.convertStrongToUnownedUnsafe. lhsType "
+           "must be T and rhsType must be inout unsafe(unowned) T"
+        << "lhsType: " << objectSrcValue->getType() << "\n"
+        << "rhsType: " << inoutDest->getType() << "\n";
+    llvm::report_fatal_error("standard fatal error msg");
+  }
+
+  SILType unmanagedOptType = objectSrcValue->getType().getReferenceStorageType(
+      SGF.getASTContext(), ReferenceOwnership::Unmanaged);
+  SILValue unownedObjectSrcValue = SGF.B.createRefToUnmanaged(
+      loc, objectSrcValue, unmanagedOptType.getObjectType());
+  SGF.B.emitStoreValueOperation(loc, unownedObjectSrcValue, inoutDest,
+                                StoreOwnershipQualifier::Trivial);
+  return ManagedValue::forUnmanaged(SGF.emitEmptyTuple(loc));
+}
+
+/// Emit SIL for the named builtin: convertUnownedUnsafeToGuaranteed.
+///
+/// We assume our convention is:
+///
+/// <BaseT, T> (BaseT, @inout @unowned(unsafe) T) -> @guaranteed T
+///
+static ManagedValue emitBuiltinConvertUnownedUnsafeToGuaranteed(
+    SILGenFunction &SGF, SILLocation loc, SubstitutionMap subs,
+    PreparedArguments &&preparedArgs, SGFContext C) {
+  auto argsOrError = decomposeArguments(SGF, loc, std::move(preparedArgs), 2);
+  if (!argsOrError)
+    return ManagedValue::forUnmanaged(SGF.emitEmptyTuple(loc));
+
+  auto args = *argsOrError;
+
+  // First grab our base and borrow it.
+  auto baseMV =
+      SGF.emitRValueAsSingleValue(args[0], SGFContext::AllowGuaranteedPlusZero)
+          .borrow(SGF, args[0]);
+
+  // Then grab our LValue operand, drop the last ownership component.
+  auto srcLV = SGF.emitLValue(args[1]->getSemanticsProvidingExpr(),
+                              SGFAccessKind::BorrowedAddressRead);
+  srcLV.unsafelyDropLastComponent(PathComponent::OwnershipKind);
+  if (!srcLV.isPhysical() || !srcLV.isLoadingPure()) {
+    llvm::report_fatal_error("Builtin.convertUnownedUnsafeToGuaranteed passed "
+                             "non-physical, non-pure lvalue as 2nd arg");
+  }
+
+  // Grab our address and load our unmanaged and convert it to a ref.
+  SILValue srcAddr =
+      SGF.emitAddressOfLValue(args[1], std::move(srcLV)).getLValueAddress();
+  SILValue srcValue = SGF.B.emitLoadValueOperation(
+      loc, srcAddr, LoadOwnershipQualifier::Trivial);
+  SILValue unownedNonTrivialRef = SGF.B.createUnmanagedToRef(
+      loc, srcValue, srcValue->getType().getReferenceStorageReferentType());
+
+  // Now convert our unownedNonTrivialRef from unowned ownership to guaranteed
+  // ownership and create a cleanup for it.
+  SILValue guaranteedNonTrivialRef = SGF.B.createUncheckedOwnershipConversion(
+      loc, unownedNonTrivialRef, OwnershipKind::Guaranteed);
+  auto guaranteedNonTrivialRefMV =
+      SGF.emitManagedBorrowedRValueWithCleanup(guaranteedNonTrivialRef);
+  // Now create a mark dependence on our base and return the result.
+  return SGF.B.createMarkDependence(loc, guaranteedNonTrivialRefMV, baseMV);
+}
+
+// Emit SIL for the named builtin: getCurrentAsyncTask.
+static ManagedValue emitBuiltinGetCurrentAsyncTask(
+    SILGenFunction &SGF, SILLocation loc, SubstitutionMap subs,
+    PreparedArguments &&preparedArgs, SGFContext C) {
+  ASTContext &ctx = SGF.getASTContext();
+  auto apply = SGF.B.createBuiltin(
+      loc,
+      ctx.getIdentifier(getBuiltinName(BuiltinValueKind::GetCurrentAsyncTask)),
+      SGF.getLoweredType(ctx.TheNativeObjectType), SubstitutionMap(), { });
+  return SGF.emitManagedRValueWithEndLifetimeCleanup(apply);
+}
+
+// Emit SIL for the named builtin: cancelAsyncTask.
+static ManagedValue emitBuiltinCancelAsyncTask(
+    SILGenFunction &SGF, SILLocation loc, SubstitutionMap subs,
+    ArrayRef<ManagedValue> args, SGFContext C) {
+  return SGF.emitCancelAsyncTask(loc, args[0].borrow(SGF, loc).forward(SGF));
+}
+
+// Emit SIL for the named builtin: getCurrentExecutor.
+static ManagedValue emitBuiltinGetCurrentExecutor(
+    SILGenFunction &SGF, SILLocation loc, SubstitutionMap subs,
+    PreparedArguments &&preparedArgs, SGFContext C) {
+  return ManagedValue::forUnmanaged(SGF.emitGetCurrentExecutor(loc));
+}
+
+// Helper to lower a function argument to be usable as the entry point of a
+// new async task
+static ManagedValue
+emitFunctionArgumentForAsyncTaskEntryPoint(SILGenFunction &SGF,
+                                           SILLocation loc,
+                                           ManagedValue function,
+                                           CanType formalReturnTy) {
+  // The function is consumed by the underlying runtime call.
+  return function.ensurePlusOne(SGF, loc);
+}
+
+// Emit SIL for the named builtin: createAsyncTaskFuture.
+static ManagedValue emitBuiltinCreateAsyncTaskFuture(
+    SILGenFunction &SGF, SILLocation loc, SubstitutionMap subs,
+    ArrayRef<ManagedValue> args, SGFContext C) {
+  ASTContext &ctx = SGF.getASTContext();
+  auto flags = args[0].forward(SGF);
+
+  // Form the metatype of the result type.
+  CanType futureResultType =
+      Type(MetatypeType::get(
+               GenericTypeParamType::get(0, 0, SGF.getASTContext()),
+               MetatypeRepresentation::Thick))
+          .subst(subs)
+          ->getCanonicalType();
+  CanType anyTypeType = ExistentialMetatypeType::get(
+      ProtocolCompositionType::get(ctx, { }, false))->getCanonicalType();
+  auto &anyTypeTL = SGF.getTypeLowering(anyTypeType);
+  auto &futureResultTL = SGF.getTypeLowering(futureResultType);
+  auto futureResultMetadata = SGF.emitExistentialErasure(
+      loc, futureResultType, futureResultTL, anyTypeTL, { }, C,
+      [&](SGFContext C) -> ManagedValue {
+    return ManagedValue::forTrivialObjectRValue(
+      SGF.B.createMetatype(loc, SGF.getLoweredType(futureResultType)));
+  }).borrow(SGF, loc).forward(SGF);
+
+  // Ensure that the closure has the appropriate type.
+  auto extInfo =
+      ASTExtInfoBuilder()
+          .withAsync()
+          .withThrows()
+          .withRepresentation(GenericFunctionType::Representation::Swift)
+          .build();
+  auto genericSig = subs.getGenericSignature().getCanonicalSignature();
+  auto genericResult = GenericTypeParamType::get(0, 0, ctx);
+  // <T> () async throws -> T
+  CanType functionTy =
+      GenericFunctionType::get(genericSig, {}, genericResult, extInfo)
+          ->getCanonicalType();
+  AbstractionPattern origParam(genericSig, functionTy);
+  CanType substParamType = functionTy.subst(subs)->getCanonicalType();
+  auto reabstractedFun =
+      SGF.emitSubstToOrigValue(loc, args[1], origParam, substParamType);
+
+  auto function = emitFunctionArgumentForAsyncTaskEntryPoint(
+      SGF, loc, reabstractedFun, futureResultType);
+
+  auto apply = SGF.B.createBuiltin(
+      loc,
+      ctx.getIdentifier(
+          getBuiltinName(BuiltinValueKind::CreateAsyncTaskFuture)),
+      SGF.getLoweredType(getAsyncTaskAndContextType(ctx)), subs,
+      { flags, futureResultMetadata, function.forward(SGF) });
+  return SGF.emitManagedRValueWithCleanup(apply);
+}
+
+// Emit SIL for the named builtin: createAsyncTaskGroupFuture.
+static ManagedValue emitBuiltinCreateAsyncTaskGroupFuture(
+    SILGenFunction &SGF, SILLocation loc, SubstitutionMap subs,
+    ArrayRef<ManagedValue> args, SGFContext C) {
+  ASTContext &ctx = SGF.getASTContext();
+  auto flags = args[0].forward(SGF);
+  auto group = args[1].borrow(SGF, loc).forward(SGF);
+
+  // Form the metatype of the result type.
+  CanType futureResultType =
+      Type(
+        MetatypeType::get(GenericTypeParamType::get(0, 0, SGF.getASTContext()), MetatypeRepresentation::Thick))
+          .subst(subs)->getCanonicalType();
+  CanType anyTypeType = ExistentialMetatypeType::get(
+      ProtocolCompositionType::get(ctx, { }, false))->getCanonicalType();
+  auto &anyTypeTL = SGF.getTypeLowering(anyTypeType);
+  auto &futureResultTL = SGF.getTypeLowering(futureResultType);
+  auto futureResultMetadata = SGF.emitExistentialErasure(
+      loc, futureResultType, futureResultTL, anyTypeTL, { }, C,
+      [&](SGFContext C) -> ManagedValue {
+    return ManagedValue::forTrivialObjectRValue(
+      SGF.B.createMetatype(loc, SGF.getLoweredType(futureResultType)));
+  }).borrow(SGF, loc).forward(SGF);
+
+  auto function = emitFunctionArgumentForAsyncTaskEntryPoint(SGF, loc, args[2],
+                                                             futureResultType);
+  auto apply = SGF.B.createBuiltin(
+      loc,
+      ctx.getIdentifier(
+          getBuiltinName(BuiltinValueKind::CreateAsyncTaskGroupFuture)),
+      SGF.getLoweredType(getAsyncTaskAndContextType(ctx)), subs,
+      { flags, group, futureResultMetadata, function.forward(SGF) });
+  return SGF.emitManagedRValueWithCleanup(apply);
+}
+
+// Shared implementation of withUnsafeContinuation and
+// withUnsafe[Throwing]Continuation.
+static ManagedValue emitBuiltinWithUnsafeContinuation(
+    SILGenFunction &SGF, SILLocation loc, SubstitutionMap subs,
+    ArrayRef<ManagedValue> args, SGFContext C, bool throws) {
+  // Allocate space to receive the resume value when the continuation is
+  // resumed.
+  auto substResultType = subs.getReplacementTypes()[0]->getCanonicalType();
+  auto opaqueResumeType = SGF.getLoweredType(AbstractionPattern::getOpaque(),
+                                             substResultType);
+  auto resumeBuf = SGF.emitTemporaryAllocation(loc, opaqueResumeType);
+
+  // Capture the current continuation.
+  auto continuation = SGF.B.createGetAsyncContinuationAddr(loc, resumeBuf,
+                                                           substResultType,
+                                                           throws);
+
+  // Get the callee value.
+  auto substFnType = args[0].getType().castTo<SILFunctionType>();
+  SILValue fnValue = (substFnType->isCalleeConsumed()
+                      ? args[0].forward(SGF)
+                      : args[0].getValue());
+
+  // Call the provided function value.
+  SGF.B.createApply(loc, fnValue, {}, {continuation});
+
+  // Await the continuation.
+  SILBasicBlock *resumeBlock = SGF.createBasicBlock();
+  SILBasicBlock *errorBlock = nullptr;
+
+  if (throws)
+    errorBlock = SGF.createBasicBlock(FunctionSection::Postmatter);
+
+  SGF.B.createAwaitAsyncContinuation(loc, continuation, resumeBlock, errorBlock);
+
+  // Propagate an error if we have one.
+  if (throws) {
+    SGF.B.emitBlock(errorBlock);
+
+    Scope errorScope(SGF, loc);
+
+    auto errorTy = SGF.getASTContext().getErrorDecl()->getDeclaredType()
+      ->getCanonicalType();
+    auto errorVal
+      = SGF.B.createOwnedPhiArgument(SILType::getPrimitiveObjectType(errorTy));
+
+    SGF.emitThrow(loc, errorVal, true);
+  }
+
+  SGF.B.emitBlock(resumeBlock);
+
+  // The incoming value is the maximally-abstracted result type of the
+  // continuation. Move it out of the resume buffer and reabstract it if
+  // necessary.
+  auto resumeResult = SGF.emitLoad(loc, resumeBuf,
+                                   AbstractionPattern::getOpaque(),
+                                   substResultType,
+                                   SGF.getTypeLowering(substResultType),
+                                   SGFContext(), IsTake);
+
+  return resumeResult;
+}
+
+// Emit SIL for the named builtin: withUnsafeContinuation
+static ManagedValue emitBuiltinWithUnsafeContinuation(
+    SILGenFunction &SGF, SILLocation loc, SubstitutionMap subs,
+    ArrayRef<ManagedValue> args, SGFContext C) {
+  return emitBuiltinWithUnsafeContinuation(SGF, loc, subs, args, C,
+                                           /*throws=*/false);
+}
+
+// Emit SIL for the named builtin: withUnsafeThrowingContinuation
+static ManagedValue emitBuiltinWithUnsafeThrowingContinuation(
+    SILGenFunction &SGF, SILLocation loc, SubstitutionMap subs,
+    ArrayRef<ManagedValue> args, SGFContext C) {
+  return emitBuiltinWithUnsafeContinuation(SGF, loc, subs, args, C,
+                                           /*throws=*/true);
+}
+
+static ManagedValue emitBuiltinAutoDiffCreateLinearMapContext(
+    SILGenFunction &SGF, SILLocation loc, SubstitutionMap subs,
+    ArrayRef<ManagedValue> args, SGFContext C) {
+  ASTContext &ctx = SGF.getASTContext();
+  auto *builtinApply = SGF.B.createBuiltin(
+      loc,
+      ctx.getIdentifier(
+          getBuiltinName(BuiltinValueKind::AutoDiffCreateLinearMapContext)),
+      SILType::getNativeObjectType(ctx),
+      subs,
+      /*args*/ {args[0].getValue()});
+  return SGF.emitManagedRValueWithCleanup(builtinApply);
+}
+
+static ManagedValue emitBuiltinAutoDiffProjectTopLevelSubcontext(
+    SILGenFunction &SGF, SILLocation loc, SubstitutionMap subs,
+    ArrayRef<ManagedValue> args, SGFContext C) {
+  ASTContext &ctx = SGF.getASTContext();
+  auto *builtinApply = SGF.B.createBuiltin(
+      loc,
+      ctx.getIdentifier(
+          getBuiltinName(BuiltinValueKind::AutoDiffProjectTopLevelSubcontext)),
+      SILType::getRawPointerType(ctx),
+      subs,
+      /*args*/ {args[0].borrow(SGF, loc).getValue()});
+  return ManagedValue::forUnmanaged(builtinApply);
+}
+
+static ManagedValue emitBuiltinAutoDiffAllocateSubcontext(
+    SILGenFunction &SGF, SILLocation loc, SubstitutionMap subs,
+    ArrayRef<ManagedValue> args, SGFContext C) {
+  ASTContext &ctx = SGF.getASTContext();
+  auto *builtinApply = SGF.B.createBuiltin(
+      loc,
+      ctx.getIdentifier(
+          getBuiltinName(BuiltinValueKind::AutoDiffAllocateSubcontext)),
+      SILType::getRawPointerType(ctx),
+      subs,
+      /*args*/ {args[0].borrow(SGF, loc).getValue(), args[1].getValue()});
+  return ManagedValue::forUnmanaged(builtinApply);
+}
+
 Optional<SpecializedEmitter>
 SpecializedEmitter::forDecl(SILGenModule &SGM, SILDeclRef function) {
   // Only consider standalone declarations in the Builtin module.
@@ -1063,7 +1616,7 @@ SpecializedEmitter::forDecl(SILGenModule &SGM, SILDeclRef function) {
   if (!isa<BuiltinUnit>(decl->getDeclContext()))
     return None;
 
-  auto name = decl->getBaseName().getIdentifier();
+  const auto name = decl->getBaseIdentifier();
   const BuiltinInfo &builtin = SGM.M.getBuiltinInfo(name);
   switch (builtin.ID) {
   // All the non-SIL, non-type-trait builtins should use the

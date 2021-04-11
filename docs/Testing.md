@@ -24,6 +24,24 @@ We use multiple approaches to test the Swift toolchain.
   locally before committing.  (Usually on a single platform, and not necessarily
   all tests.)
 * Buildbots run all tests, on all supported platforms.
+  [Smoke testing](ContinuousIntegration.md#smoke-testing)
+  skips the iOS, tvOS, and watchOS platforms.
+
+The [test/lit.cfg](https://github.com/apple/swift/blob/main/test/lit.cfg)
+uses an iOS 10.3 simulator configuration named "iPhone 5" for 32-bit testing.
+
+1.  Download and install the iOS 10.3 simulator runtime, in Xcode's
+    [Components](https://help.apple.com/xcode/#/deva7379ae35) preferences.
+
+2.  Create an "iPhone 5" simulator configuration, either in Xcode's
+    [Devices and Simulators](https://help.apple.com/xcode/#/devf225e58da)
+    window, or with the command line:
+
+    ```sh
+    xcrun simctl create 'iPhone 5' com.apple.CoreSimulator.SimDeviceType.iPhone-5 com.apple.CoreSimulator.SimRuntime.iOS-10-3
+    ```
+
+3.  Append `--ios` to the `utils/build-script` command line (see below).
 
 ### Testsuite subsets
 
@@ -48,6 +66,22 @@ test suite, via ``utils/build-script --validation-test``.
 
 Using ``utils/build-script`` will rebuild all targets which can add substantial
 time to a debug cycle.
+
+#### Using utils/run-test
+
+Using `utils/run-test` allows the user to run a single test or tests in a specific directory. 
+This can significantly speed up the debug cycle.  One can use this tool 
+instead of invoking `lit.py` directly as described in the next section.
+
+Here is an example of running the `test/Parse` tests:
+```
+    % ${swift_SOURCE_ROOT}/utils/run-test --build-dir ${SWIFT_BUILD_DIR} ${swift_SOURCE_ROOT}/test/Parse
+```
+Note that one example of a valid `${SWIFT_BUILD_DIR}` is 
+`{swift_SOURCE_ROOT}/../build/Ninja-DebugAssert/swift-linux-x86_64`.  
+It differs based on your build options and on which directory you invoke the script from.
+
+For full help options, pass `-h` to `utils/run-test` utility.
 
 #### Using lit.py
 
@@ -90,7 +124,9 @@ out with ``lit.py -h``. We document some of the more useful ones below:
          line, amid a sequence.
 * ``-a`` causes a test's commandline and output to always be printed.
 * ``--filter=<pattern>`` causes only tests with paths matching the given regular
-  expression to be run.
+  expression to be run. Alternately, you can use the `LIT_FILTER='<pattern>'`
+  environment variable, in case you're invoking `lit.py` through some other
+  tool such as `build-script`.
 * ``-i`` causes tests that have a newer modification date and failing tests to
   be run first. This is implemented by updating the mtimes of the tests.
 * ``--no-execute`` causes a dry run to be performed. *NOTE* This means that all
@@ -165,16 +201,16 @@ For every target above, there are variants for different optimizations:
 * the target with ``-optimize`` suffix (e.g., ``check-swift-optimize``) -- runs
   execution tests in ``-O`` mode.  This target will only run tests marked as
   ``executable_test``.
-* the target with ``-optimize-unchecked`` suffix (e.g.,
-  ``check-swift-optimize-unchecked``) -- runs execution tests in
+* the target with ``-optimize_unchecked`` suffix (e.g.,
+  ``check-swift-optimize_unchecked``) -- runs execution tests in
   ``-Ounchecked`` mode. This target will only run tests marked as
   ``executable_test``.
-* the target with ``-executable`` suffix (e.g.,
-  ``check-swift-executable-iphoneos-arm64``) -- runs tests marked with
+* the target with ``-only_executable`` suffix (e.g.,
+  ``check-swift-only_executable-iphoneos-arm64``) -- runs tests marked with
   ``executable_test`` in ``-Onone`` mode.
-* the target with ``-non-executable`` suffix (e.g.,
-  ``check-swift-non-executable-iphoneos-arm64``) -- runs tests not marked with
-  ``executable_test`` in ``-Onone`` mode.
+* the target with ``-only_non_executable`` suffix (e.g.,
+  ``check-swift-only_non_executable-iphoneos-arm64``) -- runs tests not marked
+  with ``executable_test`` in ``-Onone`` mode.
 
 ### Writing tests
 
@@ -250,6 +286,34 @@ code for the target that is not the build machine:
 
   Use this substitution only when you intend to run the program later in the
   test.
+
+* ``%target-run-simple-swift``: build a one-file Swift program and run it on
+  the target machine.
+
+  Use this substitution for executable tests that don't require special
+  compiler arguments.
+
+  Add ``REQUIRES: executable_test`` to the test.
+
+* ``%target-run-simple-swift(`` *compiler arguments* ``)``: like
+  ``%target-run-simple-swift``, but enables specifying compiler arguments when
+  compiling the Swift program.
+
+  Add ``REQUIRES: executable_test`` to the test.
+
+* ``%target-run-simple-swiftgyb``: build a one-file Swift `.gyb` program and
+  run it on the target machine.
+
+  Use this substitution for executable tests that don't require special
+  compiler arguments.
+
+  Add ``REQUIRES: executable_test`` to the test.
+
+* ``%target-run-simple-swiftgyb(`` *compiler arguments* ``)``: like
+  ``%target-run-simple-swiftgyb``, but enables specifying compiler arguments
+  when compiling the Swift program.
+
+  Add ``REQUIRES: executable_test`` to the test.
 
 * ``%target-run-simple-swift``: build a one-file Swift program and run it on
   the target machine.
@@ -510,17 +574,17 @@ If you're specifically testing the autoreleasing behavior of code, or do not
 expect code to interact with the Objective-C runtime, it may be OK to use ``if
 true {}``, but those assumptions should be commented in the test.
 
-#### Enabling/disabling the lldb test whitelist
+#### Enabling/disabling the lldb test allowlist
 
-It's possible to enable a whitelist of swift-specific lldb tests to run during
+It's possible to enable a allowlist of swift-specific lldb tests to run during
 PR smoke testing. Note that the default set of tests which run (which includes
-tests not in the whitelist) already only includes swift-specific tests.
+tests not in the allowlist) already only includes swift-specific tests.
 
-Enabling the whitelist is an option of last-resort to unblock swift PR testing
+Enabling the allowlist is an option of last-resort to unblock swift PR testing
 in the event that lldb test failures cannot be resolved in a timely way. If
-this becomes necessary, be sure to double-check that enabling the whitelist
+this becomes necessary, be sure to double-check that enabling the allowlist
 actually unblocks PR testing by running the smoke test build preset locally.
 
-To enable the lldb test whitelist, add `-G swiftpr` to the
+To enable the lldb test allowlist, add `-G swiftpr` to the
 `LLDB_TEST_CATEGORIES` variable in `utils/build-script-impl`. Disable it by
 removing that option.

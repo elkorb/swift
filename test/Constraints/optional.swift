@@ -64,15 +64,17 @@ func test5() -> Int? {
 }
 
 func test6<T>(_ x : T) {
-  // FIXME: this code should work; T could be Int? or Int??
-  // or something like that at runtime.  rdar://16374053
-  _ = x as? Int? // expected-error {{cannot downcast from 'T' to a more optional type 'Int?'}}
+  _ = x as? Int? // Okay.  We know nothing about T, so cannot judge.
 }
 
 class B : A { }
 
 func test7(_ x : A) {
-  _ = x as? B? // expected-error{{cannot downcast from 'A' to a more optional type 'B?'}}
+  _ = x as? B? // Okay: Injecting into an Optional
+}
+
+func test7a(_ x : B) {
+  _ = x as? A // expected-warning{{conditional cast from 'B' to 'A' always succeeds}}
 }
 
 func test8(_ x : AnyObject?) {
@@ -391,8 +393,8 @@ func sr8411() {
 
   _ = S(&foo)      // Ok
   _ = S.init(&foo) // Ok
-  _ = S.foo(&foo)  // Ok
-  _ = S.bar(&foo, 42) // Ok
+  S.foo(&foo)  // Ok
+  S.bar(&foo, 42) // Ok
 }
 
 // SR-11104 - Slightly misleading diagnostics for contextual failures with multiple fixes
@@ -419,4 +421,66 @@ func test_force_unwrap_not_being_too_eager() {
   let obj: WindowContainer = WindowContainer()
   if let _ = obj.delegate?.window { // Ok
   }
+}
+
+// rdar://problem/57097401
+func invalidOptionalChaining(a: Any) {
+  a == "="? // expected-error {{cannot use optional chaining on non-optional value of type 'String'}}
+  // expected-error@-1 {{protocol 'Any' as a type cannot conform to 'Equatable'}}
+  // expected-note@-2 {{requirement from conditional conformance of 'Any?' to 'Equatable'}} expected-note@-2 {{only concrete types such as structs, enums and classes can conform to protocols}}
+}
+
+// SR-12309 - Force unwrapping 'nil' compiles without warning
+func sr_12309() {
+  struct S {
+    var foo: Int
+  }
+
+  _ = S(foo: nil!) // expected-error {{'nil' literal cannot be force unwrapped}}
+  _ = nil! // expected-error {{'nil' literal cannot be force unwrapped}}
+  _ = (nil!) // expected-error {{'nil' literal cannot be force unwrapped}}
+  _ = (nil)! // expected-error {{'nil' literal cannot be force unwrapped}}
+  _ = ((nil))! // expected-error {{'nil' literal cannot be force unwrapped}}
+  _ = nil? // expected-error {{'nil' requires a contextual type}}
+  _ = ((nil?)) // expected-error {{'nil' requires a contextual type}}
+  _ = ((nil))? // expected-error {{'nil' requires a contextual type}}
+  _ = ((nil)?) // expected-error {{'nil' requires a contextual type}}
+  _ = nil // expected-error {{'nil' requires a contextual type}}
+  _ = (nil) // expected-error {{'nil' requires a contextual type}}
+  _ = ((nil)) // expected-error {{'nil' requires a contextual type}}
+  _ = (((nil))) // expected-error {{'nil' requires a contextual type}}
+  _ = ((((((nil)))))) // expected-error {{'nil' requires a contextual type}}
+  _ = (((((((((nil))))))))) // expected-error {{'nil' requires a contextual type}}
+
+  func test_with_contextual_type_one() -> Int? {
+    return (nil) // Ok
+  }
+
+  func test_with_contextual_type_many() -> Int? {
+    return (((nil))) // Ok
+  }
+}
+
+// rdar://75146811 - crash due to incorrect inout type
+func rdar75146811() {
+  func test(_: UnsafeMutablePointer<Double>) {}
+  func test_tuple(_: UnsafeMutablePointer<Double>, x: Int) {}
+  func test_named(x: UnsafeMutablePointer<Double>) {}
+
+  var arr: [Double]! = []
+
+  test(&arr) // expected-error {{cannot convert value of type '[Double]?' to expected argument type 'Double'}}
+  test((&arr)) // expected-error {{use of extraneous '&'}}
+  // expected-error@-1 {{cannot convert value of type '[Double]?' to expected argument type 'Double'}}
+  test(&(arr)) // expected-error {{cannot convert value of type '[Double]?' to expected argument type 'Double'}}
+
+  test_tuple(&arr, x: 0) // expected-error {{cannot convert value of type '[Double]?' to expected argument type 'Double'}}
+  test_tuple((&arr), x: 0) // expected-error {{use of extraneous '&'}}
+  // expected-error@-1 {{cannot convert value of type '[Double]?' to expected argument type 'Double'}}
+  test_tuple(&(arr), x: 0) // expected-error {{cannot convert value of type '[Double]?' to expected argument type 'Double'}}
+
+  test_named(x: &arr) // expected-error {{cannot convert value of type '[Double]?' to expected argument type 'Double'}}
+  test_named(x: (&arr)) // expected-error {{use of extraneous '&'}}
+  // expected-error@-1 {{cannot convert value of type '[Double]?' to expected argument type 'Double'}}
+  test_named(x: &(arr)) // expected-error {{cannot convert value of type '[Double]?' to expected argument type 'Double'}}
 }

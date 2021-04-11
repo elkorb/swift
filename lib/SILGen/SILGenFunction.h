@@ -46,30 +46,7 @@ class ResultPlan;
 using ResultPlanPtr = std::unique_ptr<ResultPlan>;
 class ArgumentScope;
 class Scope;
-
-enum class ApplyOptions : unsigned {
-  /// No special treatment is required.
-  None = 0,
-
-  /// Suppress the error-handling edge out of the call.  This should
-  /// be used carefully; it's used to implement features like 'rethrows'.
-  DoesNotThrow = 0x1,
-};
-inline ApplyOptions operator|(ApplyOptions lhs, ApplyOptions rhs) {
-  return ApplyOptions(unsigned(lhs) | unsigned(rhs));
-}
-inline ApplyOptions &operator|=(ApplyOptions &lhs, ApplyOptions rhs) {
-  return (lhs = (lhs | rhs));
-}
-inline bool operator&(ApplyOptions lhs, ApplyOptions rhs) {
-  return ((unsigned(lhs) & unsigned(rhs)) != 0);
-}
-inline ApplyOptions operator-(ApplyOptions lhs, ApplyOptions rhs) {
-  return ApplyOptions(unsigned(lhs) & ~unsigned(rhs));
-}
-inline ApplyOptions &operator-=(ApplyOptions &lhs, ApplyOptions rhs) {
-  return (lhs = (lhs - rhs));
-}
+class ExecutorBreadcrumb;
 
 struct LValueOptions {
   bool IsNonAccessing = false;
@@ -115,6 +92,11 @@ enum class CaptureEmission {
   /// Captures are being emitted for partial application to form a closure
   /// value.
   PartialApplication,
+  /// Captures are being emitted for partial application of a local property
+  /// wrapper setter for assign_by_wrapper. Captures are guaranteed to not
+  /// escape, because assign_by_wrapper will not use the setter if the captured
+  /// variable is not initialized.
+  AssignByWrapper,
 };
 
 /// Different ways in which an l-value can be emitted.
@@ -324,7 +306,10 @@ public:
   std::vector<BreakContinueDest> BreakContinueDestStack;
   std::vector<PatternMatchContext*> SwitchStack;
   /// Keep track of our current nested scope.
-  std::vector<SILDebugScope*> DebugScopeStack;
+  ///
+  /// The boolean tracks whether this is a 'guard' scope, which should be
+  /// popped automatically when we leave the innermost BraceStmt scope.
+  std::vector<llvm::PointerIntPair<const SILDebugScope *, 1>> DebugScopeStack;
 
   /// The cleanup depth and BB for when the operand of a
   /// BindOptionalExpr is a missing value.
@@ -392,7 +377,14 @@ public:
   /// emitted. The map is queried to produce the lvalue for a DeclRefExpr to
   /// a local variable.
   llvm::DenseMap<ValueDecl*, VarLoc> VarLocs;
- 
+
+  /// Mapping from each async let clause to the child task that will produce
+  /// the initializer value for that clause and a Boolean value indicating
+  /// whether the task can throw.
+  llvm::SmallDenseMap<std::pair<PatternBindingDecl *, unsigned>,
+                      std::pair<SILValue, bool /*isThrowing*/> >
+      AsyncLetChildTasks;
+
   /// When rebinding 'self' during an initializer delegation, we have to be
   /// careful to preserve the object at 1 retain count during the delegation
   /// because of assumptions in framework code. This enum tracks the state of
@@ -461,6 +453,12 @@ public:
   /// The metatype argument to an allocating constructor, if we're emitting one.
   SILValue AllocatorMetatype;
 
+  /// If set, the current function is an async function which is formally
+  /// isolated to the given executor, and hop_to_executor instructions must
+  /// be inserted at the begin of the function and after all suspension
+  /// points.
+  SILValue ExpectedExecutor;
+
   /// True if 'return' without an operand or falling off the end of the current
   /// function is valid.
   bool allowsVoidReturn() const { return ReturnDest.getBlock()->args_empty(); }
@@ -490,12 +488,13 @@ public:
   }
   
   SILFunction &getFunction() { return F; }
+  const SILFunction &getFunction() const { return F; }
   SILModule &getModule() { return F.getModule(); }
   SILGenBuilder &getBuilder() { return B; }
-  SILOptions &getOptions() { return getModule().getOptions(); }
+  const SILOptions &getOptions() { return getModule().getOptions(); }
 
   // Returns the type expansion context for types in this function.
-  TypeExpansionContext getTypeExpansionContext() {
+  TypeExpansionContext getTypeExpansionContext() const {
     return TypeExpansionContext(getFunction());
   }
 
@@ -530,11 +529,20 @@ public:
     return F.getTypeLowering(type);
   }
 
+  SILType getSILInterfaceType(SILParameterInfo param) const {
+    return silConv.getSILType(param, CanSILFunctionType(),
+                              getTypeExpansionContext());
+  }
+  SILType getSILInterfaceType(SILResultInfo result) const {
+    return silConv.getSILType(result, CanSILFunctionType(),
+                              getTypeExpansionContext());
+  }
+
   SILType getSILType(SILParameterInfo param, CanSILFunctionType fnTy) const {
-    return silConv.getSILType(param, fnTy);
+    return silConv.getSILType(param, fnTy, getTypeExpansionContext());
   }
   SILType getSILType(SILResultInfo result, CanSILFunctionType fnTy) const {
-    return silConv.getSILType(result, fnTy);
+    return silConv.getSILType(result, fnTy, getTypeExpansionContext());
   }
 
   SILType getSILTypeInContext(SILResultInfo result, CanSILFunctionType fnTy) {
@@ -557,22 +565,38 @@ public:
   Optional<SILAccessEnforcement> getUnknownEnforcement(VarDecl *var = nullptr);
 
   SourceManager &getSourceManager() { return SGM.M.getASTContext().SourceMgr; }
+  std::string getMagicFileIDString(SourceLoc loc);
+  StringRef getMagicFilePathString(SourceLoc loc);
+  StringRef getMagicFunctionString();
 
-  /// Push a new debug scope and set its parent pointer.
-  void enterDebugScope(SILLocation Loc) {
+  /// Enter the debug scope for \p Loc, creating it if necessary.
+  ///
+  /// \param isGuardScope If true, this is a scope for the bindings introduced by
+  /// a 'guard' statement. This scope ends when the next innermost BraceStmt ends.
+  void enterDebugScope(SILLocation Loc, bool isGuardScope=false) {
     auto *Parent =
-        DebugScopeStack.size() ? DebugScopeStack.back() : F.getDebugScope();
-    auto *DS = new (SGM.M)
-        SILDebugScope(Loc.getAsRegularLocation(), &getFunction(), Parent);
-    DebugScopeStack.push_back(DS);
+        DebugScopeStack.size() ? DebugScopeStack.back().getPointer() : F.getDebugScope();
+    auto *DS = Parent;
+    // Don't create a pointless scope for the function body's BraceStmt.
+    if (!DebugScopeStack.empty())
+      // Don't nest a scope for Loc under Parent unless it's actually different.
+      if (RegularLocation(DS->getLoc()) != RegularLocation(Loc))
+        DS = new (SGM.M)
+          SILDebugScope(RegularLocation(Loc), &getFunction(), DS);
+    DebugScopeStack.emplace_back(DS, isGuardScope);
     B.setCurrentDebugScope(DS);
   }
 
   /// Return to the previous debug scope.
   void leaveDebugScope() {
+    // Pop any 'guard' scopes first.
+    while (DebugScopeStack.back().getInt())
+      DebugScopeStack.pop_back();
+
+    // Pop the scope we're leaving now.
     DebugScopeStack.pop_back();
     if (DebugScopeStack.size())
-      B.setCurrentDebugScope(DebugScopeStack.back());
+      B.setCurrentDebugScope(DebugScopeStack.back().getPointer());
     // Don't reset the debug scope after leaving the outermost scope,
     // because the debugger is not expecting the function epilogue to
     // be in a different scope.
@@ -589,6 +613,8 @@ public:
   
   /// Generates code for a FuncDecl.
   void emitFunction(FuncDecl *fd);
+  /// Generate code for @asyncHandler functions.
+  void emitAsyncHandler(FuncDecl *fd);
   /// Emits code for a ClosureExpr.
   void emitClosure(AbstractClosureExpr *ce);
   /// Generates code for a class destroying destructor. This
@@ -597,9 +623,9 @@ public:
   void emitDestroyingDestructor(DestructorDecl *dd);
 
   /// Generates code for an artificial top-level function that starts an
-  /// application based on a main class.
-  void emitArtificialTopLevel(ClassDecl *mainClass);
-  
+  /// application based on a main type and optionally a main type.
+  void emitArtificialTopLevel(Decl *mainDecl);
+
   /// Generates code for a class deallocating destructor. This
   /// calls the destroying destructor and then deallocates 'self'.
   void emitDeallocatingDestructor(DestructorDecl *dd);
@@ -642,14 +668,17 @@ public:
   void emitClassMemberDestruction(ManagedValue selfValue, ClassDecl *cd,
                                   CleanupLocation cleanupLoc);
 
-  /// Generates code for a curry thunk from one uncurry level
-  /// of a function to another.
-  void emitCurryThunk(SILDeclRef thunk);
   /// Generates a thunk from a foreign function to the native Swift convention.
   void emitForeignToNativeThunk(SILDeclRef thunk);
-  /// Generates a thunk from a native function to the conventions.
+  /// Generates a thunk from a native function to foreign conventions.
   void emitNativeToForeignThunk(SILDeclRef thunk);
-  
+  /// Generates a stub that launches a detached task for running the NativeToForeignThunk of an
+  /// async native method.
+  ///
+  /// Returns the SILFunction created for the closure implementation function that is enqueued on the
+  /// new task.
+  SILFunction *emitNativeAsyncToForeignThunk(SILDeclRef thunk);
+
   /// Generate a nullary function that returns the given value.
   /// If \p emitProfilerIncrement is set, emit a profiler increment for
   /// \p value.
@@ -732,7 +761,7 @@ public:
                        CanAnyFunctionType inputSubstType,
                        CanAnyFunctionType outputSubstType,
                        bool baseLessVisibleThanDerived);
-  
+    
   //===--------------------------------------------------------------------===//
   // Control flow
   //===--------------------------------------------------------------------===//
@@ -798,6 +827,35 @@ public:
   void mergeCleanupBlocks();
 
   //===--------------------------------------------------------------------===//
+  // Concurrency
+  //===--------------------------------------------------------------------===//
+
+  /// Generates code to obtain the executor for the given actor isolation,
+  /// as-needed, and emits a \c hop_to_executor to that executor.
+  ///
+  /// \returns an \c ExecutorBreadcrumb that saves the information necessary to hop
+  /// back to what was previously the current executor after the actor-isolated
+  /// region ends. Invoke \c emit on the breadcrumb to
+  /// restore the previously-active executor.
+  ExecutorBreadcrumb emitHopToTargetActor(SILLocation loc,
+                            Optional<ActorIsolation> actorIso,
+                            Optional<ManagedValue> actorSelf);
+
+  /// Gets a reference to the current executor for the task.
+  /// \returns a value of type Builtin.Executor
+  SILValue emitGetCurrentExecutor(SILLocation loc);
+  
+  /// Generates code to obtain an actor's executor given a reference
+  /// to the actor.
+  /// \returns a value which can be used with hop_to_executor
+  SILValue emitLoadActorExecutor(SILLocation loc, ManagedValue actor);
+
+  /// Generates the code to obtain the executor for the shared instance 
+  /// of the \p globalActor based on the type.
+  /// \returns a value which can be used with hop_to_executor
+  SILValue emitLoadGlobalActorExecutor(Type globalActor);
+
+  //===--------------------------------------------------------------------===//
   // Memory management
   //===--------------------------------------------------------------------===//
 
@@ -828,13 +886,12 @@ public:
   /// Create (but do not emit) the epilog branch, and save the
   /// current cleanups depth as the destination for return statement branches.
   ///
-  /// \param returnType  If non-null, the epilog block will be created with an
-  ///                    argument of this type to receive the return value for
-  ///                    the function.
+  /// \param hasDirectResults  If true, the epilog block will be created with
+  ///                    arguments for each direct result of this function.
   /// \param isThrowing  If true, create an error epilog block.
   /// \param L           The SILLocation which should be associated with
   ///                    cleanup instructions.
-  void prepareEpilog(Type returnType, bool isThrowing, CleanupLocation L);
+  void prepareEpilog(bool hasDirectResults, bool isThrowing, CleanupLocation L);
   void prepareRethrowEpilog(CleanupLocation l);
   void prepareCoroutineUnwindEpilog(CleanupLocation l);
   
@@ -881,7 +938,8 @@ public:
   
   /// Emits a temporary allocation that will be deallocated automatically at the
   /// end of the current scope. Returns the address of the allocation.
-  SILValue emitTemporaryAllocation(SILLocation loc, SILType ty);
+  SILValue emitTemporaryAllocation(SILLocation loc, SILType ty,
+                                   bool hasDynamicLifetime = false);
   
   /// Prepares a buffer to receive the result of an expression, either using the
   /// 'emit into' initialization buffer if available, or allocating a temporary
@@ -1082,7 +1140,7 @@ public:
   void emitBreakOutOf(SILLocation loc, Stmt *S);
 
   void emitCatchDispatch(DoCatchStmt *S, ManagedValue exn,
-                         ArrayRef<CatchStmt*> clauses,
+                         ArrayRef<CaseStmt *> clauses,
                          JumpDest catchFallthroughDest);
 
   /// Emit code for the throw expr. If \p emitWillThrow is set then emit a
@@ -1178,10 +1236,14 @@ public:
 
   CleanupHandle enterDeallocateUninitializedArrayCleanup(SILValue array);
   void emitUninitializedArrayDeallocation(SILLocation loc, SILValue array);
+  ManagedValue emitUninitializedArrayFinalization(SILLocation loc,
+                                                  ManagedValue array);
 
-  CleanupHandle enterDelegateInitSelfWritebackCleanup(SILLocation loc,
-                                                      SILValue address,
-                                                      SILValue newValue);
+  /// Emit a cleanup for an owned value that should be written back at end of
+  /// scope if the value is not forwarded.
+  CleanupHandle enterOwnedValueWritebackCleanup(SILLocation loc,
+                                                SILValue address,
+                                                SILValue newValue);
 
   SILValue emitConversionToSemanticRValue(SILLocation loc, SILValue value,
                                           const TypeLowering &valueTL);
@@ -1222,7 +1284,8 @@ public:
                                          SGFAccessKind accessKind);
 
   // FIXME: demote this to private state.
-  ManagedValue maybeEmitValueOfLocalVarDecl(VarDecl *var);
+  ManagedValue maybeEmitValueOfLocalVarDecl(
+      VarDecl *var, AccessKind accessKind);
 
   /// Produce an RValue for a reference to the specified declaration,
   /// with the given type and in response to the specified expression.  Try to
@@ -1286,6 +1349,14 @@ public:
                        ArgumentSource &&value,
                        bool isOnSelfParameter);
 
+  ManagedValue emitRunChildTask(
+      SILLocation loc, Type functionType, ManagedValue taskFunction);
+
+  ManagedValue emitCancelAsyncTask(SILLocation loc, SILValue task);
+
+  void completeAsyncLetChildTask(
+      PatternBindingDecl *patternBinding, unsigned index);
+
   bool maybeEmitMaterializeForSetThunk(ProtocolConformanceRef conformance,
                                        SILLinkage linkage,
                                        Type selfInterfaceType, Type selfType,
@@ -1334,6 +1405,11 @@ public:
   ManagedValue emitManagedBeginBorrow(SILLocation loc, SILValue v,
                                       const TypeLowering &lowering);
   ManagedValue emitManagedBeginBorrow(SILLocation loc, SILValue v);
+
+  ManagedValue
+  emitManagedBorrowedRValueWithCleanup(SILValue borrowedValue,
+                                       const TypeLowering &lowering);
+  ManagedValue emitManagedBorrowedRValueWithCleanup(SILValue borrowedValue);
 
   ManagedValue emitManagedBorrowedRValueWithCleanup(SILValue original,
                                                     SILValue borrowedValue);
@@ -1385,7 +1461,8 @@ public:
                                            SILType storageType);
 
   SILValue emitUnwrapIntegerResult(SILLocation loc, SILValue value);
-  
+  SILValue emitWrapIntegerLiteral(SILLocation loc, SILType ty,
+                                  unsigned value);
   /// Load an r-value out of the given address. This does not handle
   /// reabstraction or bridging. If that is needed, use the other emit load
   /// entry point.
@@ -1426,6 +1503,12 @@ public:
                                 LValue &&src, LValue &&dest);
   void emitCopyLValueInto(SILLocation loc, LValue &&src,
                           Initialization *dest);
+
+  /// Emit an assignment to the variables in the destination pattern, given
+  /// an rvalue source that has the same type as the pattern.
+  void emitAssignToPatternVars(
+      SILLocation loc, Pattern *destPattern, RValue &&src);
+
   ManagedValue emitAddressOfLValue(SILLocation loc, LValue &&src,
                                    TSanKind tsanKind = TSanKind::None);
   ManagedValue emitBorrowedLValue(SILLocation loc, LValue &&src,
@@ -1480,7 +1563,8 @@ public:
                    SILLocation loc, ManagedValue fn, SubstitutionMap subs,
                    ArrayRef<ManagedValue> args,
                    const CalleeTypeInfo &calleeTypeInfo, ApplyOptions options,
-                   SGFContext evalContext);
+                   SGFContext evalContext, 
+                   Optional<ValueDecl *> implicitlyAsyncApply);
 
   RValue emitApplyOfDefaultArgGenerator(SILLocation loc,
                                         ConcreteDeclRef defaultArgsOwner,
@@ -1500,7 +1584,9 @@ public:
   RValue emitApplyOfPropertyWrapperBackingInitializer(
       SILLocation loc,
       VarDecl *var,
+      SubstitutionMap subs,
       RValue &&originalValue,
+      SILDeclRef::Kind initKind = SILDeclRef::Kind::PropertyWrapperBackingInitializer,
       SGFContext C = SGFContext());
 
   /// A convenience method for emitApply that just handles monomorphic
@@ -1551,6 +1637,7 @@ public:
 
   SILBasicBlock *getTryApplyErrorDest(SILLocation loc,
                                       CanSILFunctionType fnTy,
+                                      ExecutorBreadcrumb prevExecutor,
                                       SILResultInfo exnResult,
                                       bool isSuppressed);
 
@@ -1763,9 +1850,19 @@ public:
                                     AbstractionPattern origType,
                                     CanType substType,
                                     SGFContext ctx = SGFContext());
+  ManagedValue emitOrigToSubstValue(SILLocation loc, ManagedValue input,
+                                    AbstractionPattern origType,
+                                    CanType substType,
+                                    SILType loweredResultTy,
+                                    SGFContext ctx = SGFContext());
   RValue emitOrigToSubstValue(SILLocation loc, RValue &&input,
                               AbstractionPattern origType,
                               CanType substType,
+                              SGFContext ctx = SGFContext());
+  RValue emitOrigToSubstValue(SILLocation loc, RValue &&input,
+                              AbstractionPattern origType,
+                              CanType substType,
+                              SILType loweredResultTy,
                               SGFContext ctx = SGFContext());
 
   /// Convert a value with the abstraction patterns of the substituted
@@ -1777,6 +1874,16 @@ public:
   RValue emitSubstToOrigValue(SILLocation loc, RValue &&input,
                               AbstractionPattern origType,
                               CanType substType,
+                              SGFContext ctx = SGFContext());
+  ManagedValue emitSubstToOrigValue(SILLocation loc, ManagedValue input,
+                                    AbstractionPattern origType,
+                                    CanType substType,
+                                    SILType loweredResultTy,
+                                    SGFContext ctx = SGFContext());
+  RValue emitSubstToOrigValue(SILLocation loc, RValue &&input,
+                              AbstractionPattern origType,
+                              CanType substType,
+                              SILType loweredResultTy,
                               SGFContext ctx = SGFContext());
 
   /// Transform the AST-level types in the function signature without an
@@ -1792,12 +1899,14 @@ public:
                                     CanType inputSubstType,
                                     AbstractionPattern outputOrigType,
                                     CanType outputSubstType,
+                                    SILType loweredResultTy,
                                     SGFContext ctx = SGFContext());
   RValue emitTransformedValue(SILLocation loc, RValue &&input,
                               AbstractionPattern inputOrigType,
                               CanType inputSubstType,
                               AbstractionPattern outputOrigType,
                               CanType outputSubstType,
+                              SILType loweredResultTy,
                               SGFContext ctx = SGFContext());
 
   /// Used for emitting SILArguments of bare functions, such as thunks.
@@ -1822,6 +1931,23 @@ public:
   createWithoutActuallyEscapingClosure(SILLocation loc,
                                        ManagedValue noEscapingFunctionValue,
                                        SILType escapingFnTy);
+
+  //===--------------------------------------------------------------------===//
+  // Differentiation thunks
+  //===--------------------------------------------------------------------===//
+
+  /// Get or create a thunk for reabstracting and self-reordering
+  /// differentials/pullbacks returned by user-defined JVP/VJP functions, and
+  /// apply it to the given differential/pullback.
+  ///
+  /// If `reorderSelf` is true, reorder self so that it appears as:
+  /// - The last parameter, for differentials.
+  /// - The last result, for pullbacks.
+  ManagedValue getThunkedAutoDiffLinearMap(ManagedValue linearMap,
+                                           AutoDiffLinearMapKind linearMapKind,
+                                           CanSILFunctionType fromType,
+                                           CanSILFunctionType toType,
+                                           bool reorderSelf);
 
   //===--------------------------------------------------------------------===//
   // Declarations
@@ -1924,13 +2050,30 @@ public:
   
   /// Enter a cleanup to emit a ReleaseValue/DestroyAddr of the specified value.
   CleanupHandle enterDestroyCleanup(SILValue valueOrAddr);
-  
+
+  /// Return an owned managed value for \p value that is cleaned up using an end_lifetime instruction.
+  ///
+  /// The end_lifetime cleanup is not placed into the ManagedValue itself and
+  /// thus can not be forwarded. This means that the ManagedValue is treated
+  /// as a +0 value. This means that the owned value will be copied by SILGen
+  /// if it is ever needed as a +1 value (meaning any time that the value
+  /// escapes).
+  ///
+  /// DISCUSSION: end_lifetime ends the lifetime of an owned value in OSSA
+  /// without resulting in a destroy being emitted. This cleanup should only
+  /// be used for owned values that do not need to be destroyed if they do not
+  /// escape the current call frame but need to be copied if they escape.
+  ManagedValue emitManagedRValueWithEndLifetimeCleanup(SILValue value);
+
   /// Enter a cleanup to emit a DeinitExistentialAddr or DeinitExistentialBox
   /// of the specified value.
   CleanupHandle enterDeinitExistentialCleanup(CleanupState state,
                                               SILValue addr,
                                               CanType concreteFormalType,
                                               ExistentialRepresentation repr);
+
+  /// Enter a cleanup to cancel the given task.
+  CleanupHandle enterCancelAsyncTaskCleanup(SILValue task);
 
   /// Evaluate an Expr as an lvalue.
   LValue emitLValue(Expr *E, SGFAccessKind accessKind,

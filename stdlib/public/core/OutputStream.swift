@@ -225,10 +225,7 @@ public protocol LosslessStringConvertible: CustomStringConvertible {
 ///
 ///     let p = Point(x: 21, y: 30)
 ///     print(String(reflecting: p))
-///     // Prints "p: Point = {
-///     //           x = 21
-///     //           y = 30
-///     //         }"
+///     // Prints "Point(x: 21, y: 30)"
 ///
 /// After adding `CustomDebugStringConvertible` conformance by implementing the
 /// `debugDescription` property, `Point` provides its own custom debugging
@@ -236,12 +233,12 @@ public protocol LosslessStringConvertible: CustomStringConvertible {
 ///
 ///     extension Point: CustomDebugStringConvertible {
 ///         var debugDescription: String {
-///             return "Point(x: \(x), y: \(y))"
+///             return "(\(x), \(y))"
 ///         }
 ///     }
 ///
 ///     print(String(reflecting: p))
-///     // Prints "Point(x: 21, y: 30)"
+///     // Prints "(21, 30)"
 public protocol CustomDebugStringConvertible {
   /// A textual representation of this instance, suitable for debugging.
   ///
@@ -384,11 +381,19 @@ internal func _print_unlocked<T, TargetStream: TextOutputStream>(
   // string. Check for Optional first, before checking protocol
   // conformance below, because an Optional value is convertible to a
   // protocol if its wrapped type conforms to that protocol.
-  if _isOptional(type(of: value)) {
+  // Note: _isOptional doesn't work here when T == Any, hence we
+  // use a more elaborate formulation:
+  if _openExistential(type(of: value as Any), do: _isOptional) {
     let debugPrintable = value as! CustomDebugStringConvertible
     debugPrintable.debugDescription.write(to: &target)
     return
   }
+
+  if let string = value as? String {
+    target.write(string)
+    return
+  }
+
   if case let streamableObject as TextOutputStreamable = value {
     streamableObject.write(to: &target)
     return
@@ -549,6 +554,7 @@ extension String: TextOutputStreamable {
   /// Writes the string into the given output stream.
   ///
   /// - Parameter target: An output stream.
+  @inlinable
   public func write<Target: TextOutputStream>(to target: inout Target) {
     target.write(self)
   }

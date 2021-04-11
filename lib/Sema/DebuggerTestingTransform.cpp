@@ -15,6 +15,7 @@
 ///
 //===----------------------------------------------------------------------===//
 
+#include "CodeSynthesis.h"
 #include "swift/AST/ASTContext.h"
 #include "swift/AST/ASTNode.h"
 #include "swift/AST/ASTWalker.h"
@@ -36,7 +37,7 @@ namespace {
 /// Find available closure discriminators.
 ///
 /// The parser typically takes care of assigning unique discriminators to
-/// closures, but the parser is unavailable to this transform.
+/// closures, but the parser is unavailable during semantic analysis.
 class DiscriminatorFinder : public ASTWalker {
   unsigned NextDiscriminator = 0;
 
@@ -197,7 +198,7 @@ private:
 
     // Create "$Varname".
     llvm::SmallString<256> DstNameBuf;
-    DeclName DstDN = DstDecl->getFullName();
+    const DeclName DstDN = DstDecl->getName();
     StringRef DstName = Ctx.AllocateCopy(DstDN.getString(DstNameBuf));
     assert(!DstName.empty() && "Varname must be non-empty");
     Expr *Varname = new (Ctx) StringLiteralExpr(DstName, SourceRange());
@@ -225,9 +226,10 @@ private:
     // Create the closure.
     auto *Params = ParameterList::createEmpty(Ctx);
     auto *Closure = new (Ctx)
-        ClosureExpr(SourceRange(), nullptr, Params, SourceLoc(), SourceLoc(),
-                    SourceLoc(), TypeLoc(), DF.getNextDiscriminator(),
-                    getCurrentDeclContext());
+        ClosureExpr(DeclAttributes(), SourceRange(), nullptr, Params,
+                    SourceLoc(), SourceLoc(),
+                    SourceLoc(), SourceLoc(), nullptr,
+                    DF.getNextDiscriminator(), getCurrentDeclContext());
     Closure->setImplicit(true);
 
     // TODO: Save and return the value of $OriginalExpr.
@@ -243,8 +245,8 @@ private:
     // TODO: typeCheckExpression() seems to assign types to everything here,
     // but may not be sufficient in some cases.
     Expr *FinalExpr = ClosureCall;
-    (void)swift::createTypeChecker(Ctx);
-    if (!TypeChecker::typeCheckExpression(FinalExpr, getCurrentDeclContext()))
+    if (!TypeChecker::typeCheckExpression(FinalExpr, getCurrentDeclContext(),
+                                          /*contextualInfo=*/{}))
       llvm::report_fatal_error("Could not type-check instrumentation");
 
     // Captures have to be computed after the closure is type-checked. This
@@ -261,11 +263,11 @@ void swift::performDebuggerTestingTransform(SourceFile &SF) {
   // Walk over all decls in the file to find the next available closure
   // discriminator.
   DiscriminatorFinder DF;
-  for (Decl *D : SF.Decls)
+  for (Decl *D : SF.getTopLevelDecls())
     D->walk(DF);
 
   // Instrument the decls with checkExpect() sanity-checks.
-  for (Decl *D : SF.Decls) {
+  for (Decl *D : SF.getTopLevelDecls()) {
     DebuggerTestingTransform Transform{D->getASTContext(), DF};
     D->walk(Transform);
     swift::verify(D);

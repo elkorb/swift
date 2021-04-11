@@ -62,12 +62,12 @@ func test() {
 
 // <rdar://problem/19962010> QoI: argument label mismatches produce not-great diagnostic
 class A {
-  func a(_ text:String) {
+  func a(_ text:String) { // expected-note {{incorrect labels for candidate (have: '(text:)', expected: '(_:)')}}
   }
-  func a(_ text:String, something:Int?=nil) {
+  func a(_ text:String, something:Int?=nil) { // expected-note {{incorrect labels for candidate (have: '(text:)', expected: '(_:)')}}
   }
 }
-A().a(text:"sometext") // expected-error{{extraneous argument label 'text:' in call}}{{7-12=}}
+A().a(text:"sometext") // expected-error{{no exact matches in call to instance method 'a'}}
 
 
 // <rdar://problem/22451001> QoI: incorrect diagnostic when argument to print has the wrong type
@@ -210,4 +210,38 @@ func testWeirdFnExprs<T>(_ fn: () -> Int, _ cond: Bool, _ any: Any, genericArg: 
   func returnsVeryCurried() -> () throws -> (@escaping () -> Int) -> Void { { { x in } } }
   (try? returnsVeryCurried()())?(fn)
   // expected-error@-1 {{passing non-escaping parameter 'fn' to function expecting an @escaping closure}}
+}
+
+// rdar://problem/59066040 - Confusing error message about argument mismatch where the problem is escapiness
+func test_passing_nonescaping_to_escaping_function() {
+  struct S {}
+  typealias Handler = (S) -> ()
+
+  func bar(_ handler: Handler?) {}
+
+  func foo(_ handler: Handler) { // expected-note {{parameter 'handler' is implicitly non-escaping}}
+    bar(handler) // expected-error {{passing non-escaping parameter 'handler' to function expecting an @escaping closure}}
+  }
+}
+
+func test_passing_noescape_function_ref_to_generic_parameter() {
+  func cast<T, U>(_ t: T) -> U {
+    return t as! U
+  }
+
+  class A {
+    required init(factory: () -> Self) {
+      fatalError()
+    }
+  }
+
+  struct S {
+    func converter() -> B { fatalError() }
+  }
+
+  class B : A {
+    class func test(value: S) {
+      _ = self.init(factory: cast(value.converter)) // Ok
+    }
+  }
 }

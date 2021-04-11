@@ -15,7 +15,6 @@
 //===----------------------------------------------------------------------===//
 
 /// A type that can encode itself to an external representation.
-@_implicitly_synthesizes_nested_requirement("CodingKeys")
 public protocol Encodable {
   /// Encodes this value into the given encoder.
   ///
@@ -30,7 +29,6 @@ public protocol Encodable {
 }
 
 /// A type that can decode itself from an external representation.
-@_implicitly_synthesizes_nested_requirement("CodingKeys")
 public protocol Decodable {
   /// Creates a new instance by decoding from the given decoder.
   ///
@@ -53,7 +51,8 @@ public typealias Codable = Encodable & Decodable
 //===----------------------------------------------------------------------===//
 
 /// A type that can be used as a key for encoding and decoding.
-public protocol CodingKey: CustomStringConvertible,
+public protocol CodingKey: Sendable,
+                           CustomStringConvertible,
                            CustomDebugStringConvertible {
   /// The string to use in a named collection (e.g. a string-keyed dictionary).
   var stringValue: String { get }
@@ -473,7 +472,7 @@ public protocol KeyedEncodingContainerProtocol {
     forKey key: Key
   ) -> UnkeyedEncodingContainer
 
-  /// Stores a new nested container for the default `super` key and returns A
+  /// Stores a new nested container for the default `super` key and returns a
   /// new encoder instance for encoding `super` into that container.
   ///
   /// Equivalent to calling `superEncoder(forKey:)` with
@@ -482,7 +481,7 @@ public protocol KeyedEncodingContainerProtocol {
   /// - returns: A new encoder to pass to `super.encode(to:)`.
   mutating func superEncoder() -> Encoder
 
-  /// Stores a new nested container for the given key and returns A new encoder
+  /// Stores a new nested container for the given key and returns a new encoder
   /// instance for encoding `super` into that container.
   ///
   /// - parameter key: The key to encode `super` for.
@@ -500,9 +499,8 @@ public struct KeyedEncodingContainer<K: CodingKey> :
 {
   public typealias Key = K
 
-  /// The container for the concrete encoder. The type is _*Base so that it's
-  /// generic on the key type.
-  internal var _box: _KeyedEncodingContainerBase<Key>
+  /// The container for the concrete encoder.
+  internal var _box: _KeyedEncodingContainerBase
 
   /// Creates a new instance with the given container.
   ///
@@ -914,7 +912,7 @@ public struct KeyedEncodingContainer<K: CodingKey> :
     return _box.nestedUnkeyedContainer(forKey: key)
   }
 
-  /// Stores a new nested container for the default `super` key and returns A
+  /// Stores a new nested container for the default `super` key and returns a
   /// new encoder instance for encoding `super` into that container.
   ///
   /// Equivalent to calling `superEncoder(forKey:)` with
@@ -925,7 +923,7 @@ public struct KeyedEncodingContainer<K: CodingKey> :
     return _box.superEncoder()
   }
 
-  /// Stores a new nested container for the given key and returns A new encoder
+  /// Stores a new nested container for the given key and returns a new encoder
   /// instance for encoding `super` into that container.
   ///
   /// - parameter key: The key to encode `super` for.
@@ -1469,9 +1467,8 @@ public struct KeyedDecodingContainer<K: CodingKey> :
 {
   public typealias Key = K
 
-  /// The container for the concrete decoder. The type is _*Base so that it's
-  /// generic on the key type.
-  internal var _box: _KeyedDecodingContainerBase<Key>
+  /// The container for the concrete decoder.
+  internal var _box: _KeyedDecodingContainerBase
 
   /// Creates a new instance with the given container.
   ///
@@ -1494,7 +1491,7 @@ public struct KeyedDecodingContainer<K: CodingKey> :
   /// which are not convertible to one another. This should report all keys
   /// present which are convertible to the requested type.
   public var allKeys: [Key] {
-    return _box.allKeys
+    return _box.allKeys as! [Key]
   }
 
   /// Returns a Boolean value indicating whether the decoder contains a value
@@ -3137,7 +3134,7 @@ public protocol SingleValueDecodingContainer {
 //===----------------------------------------------------------------------===//
 
 /// A user-defined key for providing context during encoding and decoding.
-public struct CodingUserInfoKey: RawRepresentable, Equatable, Hashable {
+public struct CodingUserInfoKey: RawRepresentable, Equatable, Hashable, Sendable {
   public typealias RawValue = String
 
   /// The key's string value.
@@ -3183,7 +3180,7 @@ public struct CodingUserInfoKey: RawRepresentable, Equatable, Hashable {
 /// An error that occurs during the encoding of a value.
 public enum EncodingError: Error {
   /// The context in which the error occurred.
-  public struct Context {
+  public struct Context: Sendable {
     /// The path of coding keys taken to get to the point of the failing encode
     /// call.
     public let codingPath: [CodingKey]
@@ -3266,7 +3263,7 @@ public enum EncodingError: Error {
 /// An error that occurs during the decoding of a value.
 public enum DecodingError: Error {
   /// The context in which the error occurred.
-  public struct Context {
+  public struct Context: Sendable {
     /// The path of coding keys taken to get to the point of the failing decode
     /// call.
     public let codingPath: [CodingKey]
@@ -3371,7 +3368,7 @@ public enum DecodingError: Error {
 
 // The following extensions allow for easier error construction.
 
-internal struct _GenericIndexKey: CodingKey {
+internal struct _GenericIndexKey: CodingKey, Sendable {
     internal var stringValue: String
     internal var intValue: Int?
 
@@ -3456,7 +3453,7 @@ extension DecodingError {
 // Keyed Encoding Container Implementations
 //===----------------------------------------------------------------------===//
 
-internal class _KeyedEncodingContainerBase<Key: CodingKey> {
+internal class _KeyedEncodingContainerBase {
   internal init(){}
 
   deinit {}
@@ -3466,149 +3463,149 @@ internal class _KeyedEncodingContainerBase<Key: CodingKey> {
     fatalError("_KeyedEncodingContainerBase cannot be used directly.")
   }
 
-  internal func encodeNil(forKey key: Key) throws {
+  internal func encodeNil<K: CodingKey>(forKey key: K) throws {
     fatalError("_KeyedEncodingContainerBase cannot be used directly.")
   }
 
-  internal func encode(_ value: Bool, forKey key: Key) throws {
+  internal func encode<K: CodingKey>(_ value: Bool, forKey key: K) throws {
     fatalError("_KeyedEncodingContainerBase cannot be used directly.")
   }
 
-  internal func encode(_ value: String, forKey key: Key) throws {
+  internal func encode<K: CodingKey>(_ value: String, forKey key: K) throws {
     fatalError("_KeyedEncodingContainerBase cannot be used directly.")
   }
 
-  internal func encode(_ value: Double, forKey key: Key) throws {
+  internal func encode<K: CodingKey>(_ value: Double, forKey key: K) throws {
     fatalError("_KeyedEncodingContainerBase cannot be used directly.")
   }
 
-  internal func encode(_ value: Float, forKey key: Key) throws {
+  internal func encode<K: CodingKey>(_ value: Float, forKey key: K) throws {
     fatalError("_KeyedEncodingContainerBase cannot be used directly.")
   }
 
-  internal func encode(_ value: Int, forKey key: Key) throws {
+  internal func encode<K: CodingKey>(_ value: Int, forKey key: K) throws {
     fatalError("_KeyedEncodingContainerBase cannot be used directly.")
   }
 
-  internal func encode(_ value: Int8, forKey key: Key) throws {
+  internal func encode<K: CodingKey>(_ value: Int8, forKey key: K) throws {
     fatalError("_KeyedEncodingContainerBase cannot be used directly.")
   }
 
-  internal func encode(_ value: Int16, forKey key: Key) throws {
+  internal func encode<K: CodingKey>(_ value: Int16, forKey key: K) throws {
     fatalError("_KeyedEncodingContainerBase cannot be used directly.")
   }
 
-  internal func encode(_ value: Int32, forKey key: Key) throws {
+  internal func encode<K: CodingKey>(_ value: Int32, forKey key: K) throws {
     fatalError("_KeyedEncodingContainerBase cannot be used directly.")
   }
 
-  internal func encode(_ value: Int64, forKey key: Key) throws {
+  internal func encode<K: CodingKey>(_ value: Int64, forKey key: K) throws {
     fatalError("_KeyedEncodingContainerBase cannot be used directly.")
   }
 
-  internal func encode(_ value: UInt, forKey key: Key) throws {
+  internal func encode<K: CodingKey>(_ value: UInt, forKey key: K) throws {
     fatalError("_KeyedEncodingContainerBase cannot be used directly.")
   }
 
-  internal func encode(_ value: UInt8, forKey key: Key) throws {
+  internal func encode<K: CodingKey>(_ value: UInt8, forKey key: K) throws {
     fatalError("_KeyedEncodingContainerBase cannot be used directly.")
   }
 
-  internal func encode(_ value: UInt16, forKey key: Key) throws {
+  internal func encode<K: CodingKey>(_ value: UInt16, forKey key: K) throws {
     fatalError("_KeyedEncodingContainerBase cannot be used directly.")
   }
 
-  internal func encode(_ value: UInt32, forKey key: Key) throws {
+  internal func encode<K: CodingKey>(_ value: UInt32, forKey key: K) throws {
     fatalError("_KeyedEncodingContainerBase cannot be used directly.")
   }
 
-  internal func encode(_ value: UInt64, forKey key: Key) throws {
+  internal func encode<K: CodingKey>(_ value: UInt64, forKey key: K) throws {
     fatalError("_KeyedEncodingContainerBase cannot be used directly.")
   }
 
-  internal func encode<T: Encodable>(_ value: T, forKey key: Key) throws {
+  internal func encode<T: Encodable, K: CodingKey>(_ value: T, forKey key: K) throws {
     fatalError("_KeyedEncodingContainerBase cannot be used directly.")
   }
 
-  internal func encodeConditional<T: AnyObject & Encodable>(
+  internal func encodeConditional<T: AnyObject & Encodable, K: CodingKey>(
     _ object: T,
-    forKey key: Key
+    forKey key: K
   ) throws {
     fatalError("_KeyedEncodingContainerBase cannot be used directly.")
   }
 
-  internal func encodeIfPresent(_ value: Bool?, forKey key: Key) throws {
+  internal func encodeIfPresent<K: CodingKey>(_ value: Bool?, forKey key: K) throws {
     fatalError("_KeyedEncodingContainerBase cannot be used directly.")
   }
 
-  internal func encodeIfPresent(_ value: String?, forKey key: Key) throws {
+  internal func encodeIfPresent<K: CodingKey>(_ value: String?, forKey key: K) throws {
     fatalError("_KeyedEncodingContainerBase cannot be used directly.")
   }
 
-  internal func encodeIfPresent(_ value: Double?, forKey key: Key) throws {
+  internal func encodeIfPresent<K: CodingKey>(_ value: Double?, forKey key: K) throws {
     fatalError("_KeyedEncodingContainerBase cannot be used directly.")
   }
 
-  internal func encodeIfPresent(_ value: Float?, forKey key: Key) throws {
+  internal func encodeIfPresent<K: CodingKey>(_ value: Float?, forKey key: K) throws {
     fatalError("_KeyedEncodingContainerBase cannot be used directly.")
   }
 
-  internal func encodeIfPresent(_ value: Int?, forKey key: Key) throws {
+  internal func encodeIfPresent<K: CodingKey>(_ value: Int?, forKey key: K) throws {
     fatalError("_KeyedEncodingContainerBase cannot be used directly.")
   }
 
-  internal func encodeIfPresent(_ value: Int8?, forKey key: Key) throws {
+  internal func encodeIfPresent<K: CodingKey>(_ value: Int8?, forKey key: K) throws {
     fatalError("_KeyedEncodingContainerBase cannot be used directly.")
   }
 
-  internal func encodeIfPresent(_ value: Int16?, forKey key: Key) throws {
+  internal func encodeIfPresent<K: CodingKey>(_ value: Int16?, forKey key: K) throws {
     fatalError("_KeyedEncodingContainerBase cannot be used directly.")
   }
 
-  internal func encodeIfPresent(_ value: Int32?, forKey key: Key) throws {
+  internal func encodeIfPresent<K: CodingKey>(_ value: Int32?, forKey key: K) throws {
     fatalError("_KeyedEncodingContainerBase cannot be used directly.")
   }
 
-  internal func encodeIfPresent(_ value: Int64?, forKey key: Key) throws {
+  internal func encodeIfPresent<K: CodingKey>(_ value: Int64?, forKey key: K) throws {
     fatalError("_KeyedEncodingContainerBase cannot be used directly.")
   }
 
-  internal func encodeIfPresent(_ value: UInt?, forKey key: Key) throws {
+  internal func encodeIfPresent<K: CodingKey>(_ value: UInt?, forKey key: K) throws {
     fatalError("_KeyedEncodingContainerBase cannot be used directly.")
   }
 
-  internal func encodeIfPresent(_ value: UInt8?, forKey key: Key) throws {
+  internal func encodeIfPresent<K: CodingKey>(_ value: UInt8?, forKey key: K) throws {
     fatalError("_KeyedEncodingContainerBase cannot be used directly.")
   }
 
-  internal func encodeIfPresent(_ value: UInt16?, forKey key: Key) throws {
+  internal func encodeIfPresent<K: CodingKey>(_ value: UInt16?, forKey key: K) throws {
     fatalError("_KeyedEncodingContainerBase cannot be used directly.")
   }
 
-  internal func encodeIfPresent(_ value: UInt32?, forKey key: Key) throws {
+  internal func encodeIfPresent<K: CodingKey>(_ value: UInt32?, forKey key: K) throws {
     fatalError("_KeyedEncodingContainerBase cannot be used directly.")
   }
 
-  internal func encodeIfPresent(_ value: UInt64?, forKey key: Key) throws {
+  internal func encodeIfPresent<K: CodingKey>(_ value: UInt64?, forKey key: K) throws {
     fatalError("_KeyedEncodingContainerBase cannot be used directly.")
   }
 
-  internal func encodeIfPresent<T: Encodable>(
+  internal func encodeIfPresent<T: Encodable, K: CodingKey>(
     _ value: T?,
-    forKey key: Key
+    forKey key: K
   ) throws {
     fatalError("_KeyedEncodingContainerBase cannot be used directly.")
   }
 
-  internal func nestedContainer<NestedKey>(
+  internal func nestedContainer<NestedKey, K: CodingKey>(
     keyedBy keyType: NestedKey.Type,
-    forKey key: Key
+    forKey key: K
   ) -> KeyedEncodingContainer<NestedKey> {
     fatalError("_KeyedEncodingContainerBase cannot be used directly.")
   }
 
-  internal func nestedUnkeyedContainer(
-    forKey key: Key
+  internal func nestedUnkeyedContainer<K: CodingKey>(
+    forKey key: K
   ) -> UnkeyedEncodingContainer {
     fatalError("_KeyedEncodingContainerBase cannot be used directly.")
   }
@@ -3617,14 +3614,14 @@ internal class _KeyedEncodingContainerBase<Key: CodingKey> {
     fatalError("_KeyedEncodingContainerBase cannot be used directly.")
   }
 
-  internal func superEncoder(forKey key: Key) -> Encoder {
+  internal func superEncoder<K: CodingKey>(forKey key: K) -> Encoder {
     fatalError("_KeyedEncodingContainerBase cannot be used directly.")
   }
 }
 
 internal final class _KeyedEncodingContainerBox<
   Concrete: KeyedEncodingContainerProtocol
->: _KeyedEncodingContainerBase<Concrete.Key> {
+>: _KeyedEncodingContainerBase {
   typealias Key = Concrete.Key
 
   internal var concrete: Concrete
@@ -3637,195 +3634,263 @@ internal final class _KeyedEncodingContainerBox<
     return concrete.codingPath
   }
 
-  override internal func encodeNil(forKey key: Key) throws {
+  override internal func encodeNil<K: CodingKey>(forKey key: K) throws {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     try concrete.encodeNil(forKey: key)
   }
 
-  override internal func encode(_ value: Bool, forKey key: Key) throws {
+  override internal func encode<K: CodingKey>(_ value: Bool, forKey key: K) throws {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     try concrete.encode(value, forKey: key)
   }
 
-  override internal func encode(_ value: String, forKey key: Key) throws {
+  override internal func encode<K: CodingKey>(_ value: String, forKey key: K) throws {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     try concrete.encode(value, forKey: key)
   }
 
-  override internal func encode(_ value: Double, forKey key: Key) throws {
+  override internal func encode<K: CodingKey>(_ value: Double, forKey key: K) throws {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     try concrete.encode(value, forKey: key)
   }
 
-  override internal func encode(_ value: Float, forKey key: Key) throws {
+  override internal func encode<K: CodingKey>(_ value: Float, forKey key: K) throws {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     try concrete.encode(value, forKey: key)
   }
 
-  override internal func encode(_ value: Int, forKey key: Key) throws {
+  override internal func encode<K: CodingKey>(_ value: Int, forKey key: K) throws {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     try concrete.encode(value, forKey: key)
   }
 
-  override internal func encode(_ value: Int8, forKey key: Key) throws {
+  override internal func encode<K: CodingKey>(_ value: Int8, forKey key: K) throws {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     try concrete.encode(value, forKey: key)
   }
 
-  override internal func encode(_ value: Int16, forKey key: Key) throws {
+  override internal func encode<K: CodingKey>(_ value: Int16, forKey key: K) throws {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     try concrete.encode(value, forKey: key)
   }
 
-  override internal func encode(_ value: Int32, forKey key: Key) throws {
+  override internal func encode<K: CodingKey>(_ value: Int32, forKey key: K) throws {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     try concrete.encode(value, forKey: key)
   }
 
-  override internal func encode(_ value: Int64, forKey key: Key) throws {
+  override internal func encode<K: CodingKey>(_ value: Int64, forKey key: K) throws {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     try concrete.encode(value, forKey: key)
   }
 
-  override internal func encode(_ value: UInt, forKey key: Key) throws {
+  override internal func encode<K: CodingKey>(_ value: UInt, forKey key: K) throws {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     try concrete.encode(value, forKey: key)
   }
 
-  override internal func encode(_ value: UInt8, forKey key: Key) throws {
+  override internal func encode<K: CodingKey>(_ value: UInt8, forKey key: K) throws {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     try concrete.encode(value, forKey: key)
   }
 
-  override internal func encode(_ value: UInt16, forKey key: Key) throws {
+  override internal func encode<K: CodingKey>(_ value: UInt16, forKey key: K) throws {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     try concrete.encode(value, forKey: key)
   }
 
-  override internal func encode(_ value: UInt32, forKey key: Key) throws {
+  override internal func encode<K: CodingKey>(_ value: UInt32, forKey key: K) throws {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     try concrete.encode(value, forKey: key)
   }
 
-  override internal func encode(_ value: UInt64, forKey key: Key) throws {
+  override internal func encode<K: CodingKey>(_ value: UInt64, forKey key: K) throws {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     try concrete.encode(value, forKey: key)
   }
 
-  override internal func encode<T: Encodable>(
+  override internal func encode<T: Encodable, K: CodingKey>(
     _ value: T,
-    forKey key: Key
+    forKey key: K
   ) throws {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     try concrete.encode(value, forKey: key)
   }
 
-  override internal func encodeConditional<T: AnyObject & Encodable>(
+  override internal func encodeConditional<T: AnyObject & Encodable, K: CodingKey>(
     _ object: T,
-    forKey key: Key
+    forKey key: K
   ) throws {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     try concrete.encodeConditional(object, forKey: key)
   }
 
-  override internal func encodeIfPresent(
+  override internal func encodeIfPresent<K: CodingKey>(
     _ value: Bool?,
-    forKey key: Key
+    forKey key: K
   ) throws {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     try concrete.encodeIfPresent(value, forKey: key)
   }
 
-  override internal func encodeIfPresent(
+  override internal func encodeIfPresent<K: CodingKey>(
     _ value: String?,
-    forKey key: Key
+    forKey key: K
   ) throws {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     try concrete.encodeIfPresent(value, forKey: key)
   }
 
-  override internal func encodeIfPresent(
+  override internal func encodeIfPresent<K: CodingKey>(
     _ value: Double?,
-    forKey key: Key
+    forKey key: K
   ) throws {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     try concrete.encodeIfPresent(value, forKey: key)
   }
 
-  override internal func encodeIfPresent(
+  override internal func encodeIfPresent<K: CodingKey>(
     _ value: Float?,
-    forKey key: Key
+    forKey key: K
   ) throws {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     try concrete.encodeIfPresent(value, forKey: key)
   }
 
-  override internal func encodeIfPresent(
+  override internal func encodeIfPresent<K: CodingKey>(
     _ value: Int?,
-    forKey key: Key
+    forKey key: K
   ) throws {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     try concrete.encodeIfPresent(value, forKey: key)
   }
 
-  override internal func encodeIfPresent(
+  override internal func encodeIfPresent<K: CodingKey>(
     _ value: Int8?,
-    forKey key: Key
+    forKey key: K
   ) throws {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     try concrete.encodeIfPresent(value, forKey: key)
   }
 
-  override internal func encodeIfPresent(
+  override internal func encodeIfPresent<K: CodingKey>(
     _ value: Int16?,
-    forKey key: Key
+    forKey key: K
   ) throws {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     try concrete.encodeIfPresent(value, forKey: key)
   }
 
-  override internal func encodeIfPresent(
+  override internal func encodeIfPresent<K: CodingKey>(
     _ value: Int32?,
-    forKey key: Key
+    forKey key: K
   ) throws {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     try concrete.encodeIfPresent(value, forKey: key)
   }
 
-  override internal func encodeIfPresent(
+  override internal func encodeIfPresent<K: CodingKey>(
     _ value: Int64?,
-    forKey key: Key
+    forKey key: K
   ) throws {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     try concrete.encodeIfPresent(value, forKey: key)
   }
 
-  override internal func encodeIfPresent(
+  override internal func encodeIfPresent<K: CodingKey>(
     _ value: UInt?,
-    forKey key: Key
+    forKey key: K
   ) throws {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     try concrete.encodeIfPresent(value, forKey: key)
   }
 
-  override internal func encodeIfPresent(
+  override internal func encodeIfPresent<K: CodingKey>(
     _ value: UInt8?,
-    forKey key: Key
+    forKey key: K
   ) throws {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     try concrete.encodeIfPresent(value, forKey: key)
   }
 
-  override internal func encodeIfPresent(
+  override internal func encodeIfPresent<K: CodingKey>(
     _ value: UInt16?,
-    forKey key: Key
+    forKey key: K
   ) throws {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     try concrete.encodeIfPresent(value, forKey: key)
   }
 
-  override internal func encodeIfPresent(
+  override internal func encodeIfPresent<K: CodingKey>(
     _ value: UInt32?,
-    forKey key: Key
+    forKey key: K
   ) throws {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     try concrete.encodeIfPresent(value, forKey: key)
   }
 
-  override internal func encodeIfPresent(
+  override internal func encodeIfPresent<K: CodingKey>(
     _ value: UInt64?,
-    forKey key: Key
+    forKey key: K
   ) throws {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     try concrete.encodeIfPresent(value, forKey: key)
   }
 
-  override internal func encodeIfPresent<T: Encodable>(
+  override internal func encodeIfPresent<T: Encodable, K: CodingKey>(
     _ value: T?,
-    forKey key: Key
+    forKey key: K
   ) throws {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     try concrete.encodeIfPresent(value, forKey: key)
   }
 
-  override internal func nestedContainer<NestedKey>(
+  override internal func nestedContainer<NestedKey, K: CodingKey>(
     keyedBy keyType: NestedKey.Type,
-    forKey key: Key
+    forKey key: K
   ) -> KeyedEncodingContainer<NestedKey> {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     return concrete.nestedContainer(keyedBy: NestedKey.self, forKey: key)
   }
 
-  override internal func nestedUnkeyedContainer(
-    forKey key: Key
+  override internal func nestedUnkeyedContainer<K: CodingKey>(
+    forKey key: K
   ) -> UnkeyedEncodingContainer {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     return concrete.nestedUnkeyedContainer(forKey: key)
   }
 
@@ -3833,12 +3898,14 @@ internal final class _KeyedEncodingContainerBox<
     return concrete.superEncoder()
   }
 
-  override internal func superEncoder(forKey key: Key) -> Encoder {
+  override internal func superEncoder<K: CodingKey>(forKey key: K) -> Encoder {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     return concrete.superEncoder(forKey: key)
   }
 }
 
-internal class _KeyedDecodingContainerBase<Key: CodingKey> {
+internal class _KeyedDecodingContainerBase {
   internal init(){}
 
   deinit {}
@@ -3847,237 +3914,237 @@ internal class _KeyedDecodingContainerBase<Key: CodingKey> {
     fatalError("_KeyedDecodingContainerBase cannot be used directly.")
   }
 
-  internal var allKeys: [Key] {
+  internal var allKeys: [CodingKey] {
     fatalError("_KeyedDecodingContainerBase cannot be used directly.")
   }
 
-  internal func contains(_ key: Key) -> Bool {
+  internal func contains<K: CodingKey>(_ key: K) -> Bool {
     fatalError("_KeyedDecodingContainerBase cannot be used directly.")
   }
 
-  internal func decodeNil(forKey key: Key) throws -> Bool {
+  internal func decodeNil<K: CodingKey>(forKey key: K) throws -> Bool {
     fatalError("_KeyedDecodingContainerBase cannot be used directly.")
   }
 
-  internal func decode(
+  internal func decode<K: CodingKey>(
     _ type: Bool.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> Bool {
     fatalError("_KeyedDecodingContainerBase cannot be used directly.")
   }
 
-  internal func decode(
+  internal func decode<K: CodingKey>(
     _ type: String.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> String {
     fatalError("_KeyedDecodingContainerBase cannot be used directly.")
   }
 
-  internal func decode(
+  internal func decode<K: CodingKey>(
     _ type: Double.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> Double {
     fatalError("_KeyedDecodingContainerBase cannot be used directly.")
   }
 
-  internal func decode(
+  internal func decode<K: CodingKey>(
     _ type: Float.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> Float {
     fatalError("_KeyedDecodingContainerBase cannot be used directly.")
   }
 
-  internal func decode(
+  internal func decode<K: CodingKey>(
     _ type: Int.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> Int {
     fatalError("_KeyedDecodingContainerBase cannot be used directly.")
   }
 
-  internal func decode(
+  internal func decode<K: CodingKey>(
     _ type: Int8.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> Int8 {
     fatalError("_KeyedDecodingContainerBase cannot be used directly.")
   }
 
-  internal func decode(
+  internal func decode<K: CodingKey>(
     _ type: Int16.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> Int16 {
     fatalError("_KeyedDecodingContainerBase cannot be used directly.")
   }
 
-  internal func decode(
+  internal func decode<K: CodingKey>(
     _ type: Int32.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> Int32 {
     fatalError("_KeyedDecodingContainerBase cannot be used directly.")
   }
 
-  internal func decode(
+  internal func decode<K: CodingKey>(
     _ type: Int64.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> Int64 {
     fatalError("_KeyedDecodingContainerBase cannot be used directly.")
   }
 
-  internal func decode(
+  internal func decode<K: CodingKey>(
     _ type: UInt.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> UInt {
     fatalError("_KeyedDecodingContainerBase cannot be used directly.")
   }
 
-  internal func decode(
+  internal func decode<K: CodingKey>(
     _ type: UInt8.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> UInt8 {
     fatalError("_KeyedDecodingContainerBase cannot be used directly.")
   }
 
-  internal func decode(
+  internal func decode<K: CodingKey>(
     _ type: UInt16.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> UInt16 {
     fatalError("_KeyedDecodingContainerBase cannot be used directly.")
   }
 
-  internal func decode(
+  internal func decode<K: CodingKey>(
     _ type: UInt32.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> UInt32 {
     fatalError("_KeyedDecodingContainerBase cannot be used directly.")
   }
 
-  internal func decode(
+  internal func decode<K: CodingKey>(
     _ type: UInt64.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> UInt64 {
     fatalError("_KeyedDecodingContainerBase cannot be used directly.")
   }
 
-  internal func decode<T: Decodable>(
+  internal func decode<T: Decodable, K: CodingKey>(
     _ type: T.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> T {
     fatalError("_KeyedDecodingContainerBase cannot be used directly.")
   }
 
-  internal func decodeIfPresent(
+  internal func decodeIfPresent<K: CodingKey>(
     _ type: Bool.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> Bool? {
     fatalError("_KeyedDecodingContainerBase cannot be used directly.")
   }
 
-  internal func decodeIfPresent(
+  internal func decodeIfPresent<K: CodingKey>(
     _ type: String.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> String? {
     fatalError("_KeyedDecodingContainerBase cannot be used directly.")
   }
 
-  internal func decodeIfPresent(
+  internal func decodeIfPresent<K: CodingKey>(
     _ type: Double.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> Double? {
     fatalError("_KeyedDecodingContainerBase cannot be used directly.")
   }
 
-  internal func decodeIfPresent(
+  internal func decodeIfPresent<K: CodingKey>(
     _ type: Float.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> Float? {
     fatalError("_KeyedDecodingContainerBase cannot be used directly.")
   }
 
-  internal func decodeIfPresent(
+  internal func decodeIfPresent<K: CodingKey>(
     _ type: Int.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> Int? {
     fatalError("_KeyedDecodingContainerBase cannot be used directly.")
   }
 
-  internal func decodeIfPresent(
+  internal func decodeIfPresent<K: CodingKey>(
     _ type: Int8.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> Int8? {
     fatalError("_KeyedDecodingContainerBase cannot be used directly.")
   }
 
-  internal func decodeIfPresent(
+  internal func decodeIfPresent<K: CodingKey>(
     _ type: Int16.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> Int16? {
     fatalError("_KeyedDecodingContainerBase cannot be used directly.")
   }
 
-  internal func decodeIfPresent(
+  internal func decodeIfPresent<K: CodingKey>(
     _ type: Int32.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> Int32? {
     fatalError("_KeyedDecodingContainerBase cannot be used directly.")
   }
 
-  internal func decodeIfPresent(
+  internal func decodeIfPresent<K: CodingKey>(
     _ type: Int64.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> Int64? {
     fatalError("_KeyedDecodingContainerBase cannot be used directly.")
   }
 
-  internal func decodeIfPresent(
+  internal func decodeIfPresent<K: CodingKey>(
     _ type: UInt.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> UInt? {
     fatalError("_KeyedDecodingContainerBase cannot be used directly.")
   }
 
-  internal func decodeIfPresent(
+  internal func decodeIfPresent<K: CodingKey>(
     _ type: UInt8.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> UInt8? {
     fatalError("_KeyedDecodingContainerBase cannot be used directly.")
   }
 
-  internal func decodeIfPresent(
+  internal func decodeIfPresent<K: CodingKey>(
     _ type: UInt16.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> UInt16? {
     fatalError("_KeyedDecodingContainerBase cannot be used directly.")
   }
 
-  internal func decodeIfPresent(
+  internal func decodeIfPresent<K: CodingKey>(
     _ type: UInt32.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> UInt32? {
     fatalError("_KeyedDecodingContainerBase cannot be used directly.")
   }
 
-  internal func decodeIfPresent(
+  internal func decodeIfPresent<K: CodingKey>(
     _ type: UInt64.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> UInt64? {
     fatalError("_KeyedDecodingContainerBase cannot be used directly.")
   }
 
-  internal func decodeIfPresent<T: Decodable>(
+  internal func decodeIfPresent<T: Decodable, K: CodingKey>(
     _ type: T.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> T? {
     fatalError("_KeyedDecodingContainerBase cannot be used directly.")
   }
 
-  internal func nestedContainer<NestedKey>(
+  internal func nestedContainer<NestedKey, K: CodingKey>(
     keyedBy type: NestedKey.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> KeyedDecodingContainer<NestedKey> {
     fatalError("_KeyedDecodingContainerBase cannot be used directly.")
   }
 
-  internal func nestedUnkeyedContainer(
-    forKey key: Key
+  internal func nestedUnkeyedContainer<K: CodingKey>(
+    forKey key: K
   ) throws -> UnkeyedDecodingContainer {
     fatalError("_KeyedDecodingContainerBase cannot be used directly.")
   }
@@ -4086,14 +4153,14 @@ internal class _KeyedDecodingContainerBase<Key: CodingKey> {
     fatalError("_KeyedDecodingContainerBase cannot be used directly.")
   }
 
-  internal func superDecoder(forKey key: Key) throws -> Decoder {
+  internal func superDecoder<K: CodingKey>(forKey key: K) throws -> Decoder {
     fatalError("_KeyedDecodingContainerBase cannot be used directly.")
   }
 }
 
 internal final class _KeyedDecodingContainerBox<
   Concrete: KeyedDecodingContainerProtocol
->: _KeyedDecodingContainerBase<Concrete.Key> {
+>: _KeyedDecodingContainerBase {
   typealias Key = Concrete.Key
 
   internal var concrete: Concrete
@@ -4106,238 +4173,306 @@ internal final class _KeyedDecodingContainerBox<
     return concrete.codingPath
   }
 
-  override var allKeys: [Key] {
+  override var allKeys: [CodingKey] {
     return concrete.allKeys
   }
 
-  override internal func contains(_ key: Key) -> Bool {
+  override internal func contains<K: CodingKey>(_ key: K) -> Bool {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     return concrete.contains(key)
   }
 
-  override internal func decodeNil(forKey key: Key) throws -> Bool {
+  override internal func decodeNil<K: CodingKey>(forKey key: K) throws -> Bool {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     return try concrete.decodeNil(forKey: key)
   }
 
-  override internal func decode(
+  override internal func decode<K: CodingKey>(
     _ type: Bool.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> Bool {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     return try concrete.decode(Bool.self, forKey: key)
   }
 
-  override internal func decode(
+  override internal func decode<K: CodingKey>(
     _ type: String.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> String {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     return try concrete.decode(String.self, forKey: key)
   }
 
-  override internal func decode(
+  override internal func decode<K: CodingKey>(
     _ type: Double.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> Double {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     return try concrete.decode(Double.self, forKey: key)
   }
 
-  override internal func decode(
+  override internal func decode<K: CodingKey>(
     _ type: Float.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> Float {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     return try concrete.decode(Float.self, forKey: key)
   }
 
-  override internal func decode(
+  override internal func decode<K: CodingKey>(
     _ type: Int.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> Int {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     return try concrete.decode(Int.self, forKey: key)
   }
 
-  override internal func decode(
+  override internal func decode<K: CodingKey>(
     _ type: Int8.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> Int8 {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     return try concrete.decode(Int8.self, forKey: key)
   }
 
-  override internal func decode(
+  override internal func decode<K: CodingKey>(
     _ type: Int16.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> Int16 {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     return try concrete.decode(Int16.self, forKey: key)
   }
 
-  override internal func decode(
+  override internal func decode<K: CodingKey>(
     _ type: Int32.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> Int32 {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     return try concrete.decode(Int32.self, forKey: key)
   }
 
-  override internal func decode(
+  override internal func decode<K: CodingKey>(
     _ type: Int64.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> Int64 {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     return try concrete.decode(Int64.self, forKey: key)
   }
 
-  override internal func decode(
+  override internal func decode<K: CodingKey>(
     _ type: UInt.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> UInt {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     return try concrete.decode(UInt.self, forKey: key)
   }
 
-  override internal func decode(
+  override internal func decode<K: CodingKey>(
     _ type: UInt8.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> UInt8 {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     return try concrete.decode(UInt8.self, forKey: key)
   }
 
-  override internal func decode(
+  override internal func decode<K: CodingKey>(
     _ type: UInt16.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> UInt16 {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     return try concrete.decode(UInt16.self, forKey: key)
   }
 
-  override internal func decode(
+  override internal func decode<K: CodingKey>(
     _ type: UInt32.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> UInt32 {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     return try concrete.decode(UInt32.self, forKey: key)
   }
 
-  override internal func decode(
+  override internal func decode<K: CodingKey>(
     _ type: UInt64.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> UInt64 {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     return try concrete.decode(UInt64.self, forKey: key)
   }
 
-  override internal func decode<T: Decodable>(
+  override internal func decode<T: Decodable, K: CodingKey>(
     _ type: T.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> T {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     return try concrete.decode(T.self, forKey: key)
   }
 
-  override internal func decodeIfPresent(
+  override internal func decodeIfPresent<K: CodingKey>(
     _ type: Bool.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> Bool? {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     return try concrete.decodeIfPresent(Bool.self, forKey: key)
   }
 
-  override internal func decodeIfPresent(
+  override internal func decodeIfPresent<K: CodingKey>(
     _ type: String.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> String? {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     return try concrete.decodeIfPresent(String.self, forKey: key)
   }
 
-  override internal func decodeIfPresent(
+  override internal func decodeIfPresent<K: CodingKey>(
     _ type: Double.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> Double? {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     return try concrete.decodeIfPresent(Double.self, forKey: key)
   }
 
-  override internal func decodeIfPresent(
+  override internal func decodeIfPresent<K: CodingKey>(
     _ type: Float.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> Float? {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     return try concrete.decodeIfPresent(Float.self, forKey: key)
   }
 
-  override internal func decodeIfPresent(
+  override internal func decodeIfPresent<K: CodingKey>(
     _ type: Int.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> Int? {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     return try concrete.decodeIfPresent(Int.self, forKey: key)
   }
 
-  override internal func decodeIfPresent(
+  override internal func decodeIfPresent<K: CodingKey>(
     _ type: Int8.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> Int8? {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     return try concrete.decodeIfPresent(Int8.self, forKey: key)
   }
 
-  override internal func decodeIfPresent(
+  override internal func decodeIfPresent<K: CodingKey>(
     _ type: Int16.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> Int16? {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     return try concrete.decodeIfPresent(Int16.self, forKey: key)
   }
 
-  override internal func decodeIfPresent(
+  override internal func decodeIfPresent<K: CodingKey>(
     _ type: Int32.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> Int32? {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     return try concrete.decodeIfPresent(Int32.self, forKey: key)
   }
 
-  override internal func decodeIfPresent(
+  override internal func decodeIfPresent<K: CodingKey>(
     _ type: Int64.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> Int64? {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     return try concrete.decodeIfPresent(Int64.self, forKey: key)
   }
 
-  override internal func decodeIfPresent(
+  override internal func decodeIfPresent<K: CodingKey>(
     _ type: UInt.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> UInt? {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     return try concrete.decodeIfPresent(UInt.self, forKey: key)
   }
 
-  override internal func decodeIfPresent(
+  override internal func decodeIfPresent<K: CodingKey>(
     _ type: UInt8.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> UInt8? {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     return try concrete.decodeIfPresent(UInt8.self, forKey: key)
   }
 
-  override internal func decodeIfPresent(
+  override internal func decodeIfPresent<K: CodingKey>(
     _ type: UInt16.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> UInt16? {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     return try concrete.decodeIfPresent(UInt16.self, forKey: key)
   }
 
-  override internal func decodeIfPresent(
+  override internal func decodeIfPresent<K: CodingKey>(
     _ type: UInt32.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> UInt32? {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     return try concrete.decodeIfPresent(UInt32.self, forKey: key)
   }
 
-  override internal func decodeIfPresent(
+  override internal func decodeIfPresent<K: CodingKey>(
     _ type: UInt64.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> UInt64? {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     return try concrete.decodeIfPresent(UInt64.self, forKey: key)
   }
 
-  override internal func decodeIfPresent<T: Decodable>(
+  override internal func decodeIfPresent<T: Decodable, K: CodingKey>(
     _ type: T.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> T? {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     return try concrete.decodeIfPresent(T.self, forKey: key)
   }
 
-  override internal func nestedContainer<NestedKey>(
+  override internal func nestedContainer<NestedKey, K: CodingKey>(
     keyedBy type: NestedKey.Type,
-    forKey key: Key
+    forKey key: K
   ) throws -> KeyedDecodingContainer<NestedKey> {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     return try concrete.nestedContainer(keyedBy: NestedKey.self, forKey: key)
   }
 
-  override internal func nestedUnkeyedContainer(
-    forKey key: Key
+  override internal func nestedUnkeyedContainer<K: CodingKey>(
+    forKey key: K
   ) throws -> UnkeyedDecodingContainer {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     return try concrete.nestedUnkeyedContainer(forKey: key)
   }
 
@@ -4345,7 +4480,9 @@ internal final class _KeyedDecodingContainerBox<
     return try concrete.superDecoder()
   }
 
-  override internal func superDecoder(forKey key: Key) throws -> Decoder {
+  override internal func superDecoder<K: CodingKey>(forKey key: K) throws -> Decoder {
+    assert(K.self == Key.self)
+    let key = unsafeBitCast(key, to: Key.self)
     return try concrete.superDecoder(forKey: key)
   }
 }
@@ -4593,6 +4730,40 @@ extension RawRepresentable where RawValue == Float, Self: Decodable {
     self = value
   }
 }
+
+#if !((os(macOS) || targetEnvironment(macCatalyst)) && arch(x86_64))
+@available(macOS 11.0, iOS 14.0, watchOS 7.0, tvOS 14.0, *)
+extension Float16: Codable {
+  /// Creates a new instance by decoding from the given decoder.
+  ///
+  /// This initializer throws an error if reading from the decoder fails, or
+  /// if the data read is corrupted or otherwise invalid.
+  ///
+  /// - Parameter decoder: The decoder to read data from.
+  public init(from decoder: Decoder) throws {
+    let floatValue = try Float(from: decoder)
+    self = Float16(floatValue)
+    if isInfinite && floatValue.isFinite {
+      throw DecodingError.dataCorrupted(
+        DecodingError.Context(
+          codingPath: decoder.codingPath,
+          debugDescription: "Parsed JSON number \(floatValue) does not fit in Float16."
+        )
+      )
+    }
+  }
+
+  /// Encodes this value into the given encoder.
+  ///
+  /// This function throws an error if any values are invalid for the given
+  /// encoder's format.
+  ///
+  /// - Parameter encoder: The encoder to write data to.
+  public func encode(to encoder: Encoder) throws {
+    try Float(self).encode(to: encoder)
+  }
+}
+#endif
 
 extension Int: Codable {
   /// Creates a new instance by decoding from the given decoder.

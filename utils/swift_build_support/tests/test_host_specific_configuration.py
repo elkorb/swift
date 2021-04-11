@@ -73,6 +73,34 @@ class ToolchainTestCase(unittest.TestCase):
         self.assertIn('swift-test-stdlib-iphoneos-arm64',
                       hsc.swift_stdlib_build_targets)
 
+    def test_should_configure_and_build_cross_compiling_with_stdlib_targets(self):
+        args = self.default_args()
+        args.build_ios_device = True
+        args.host_target = 'macosx-x86_64'
+        args.stdlib_deployment_targets = ['iphoneos-arm64']
+
+        hsc = HostSpecificConfiguration('iphoneos-arm64', args)
+
+        self.assertEqual(len(hsc.sdks_to_configure), 1)
+        self.assertIn('IOS', hsc.sdks_to_configure)
+
+        self.assertEqual(len(hsc.swift_stdlib_build_targets), 1)
+        self.assertIn('swift-test-stdlib-iphoneos-arm64',
+                      hsc.swift_stdlib_build_targets)
+
+    def test_should_only_configure_when_cross_compiling_different_stdlib_targets(self):
+        args = self.default_args()
+        args.build_ios_device = True
+        args.host_target = 'macosx-x86_64'
+        args.stdlib_deployment_targets = ['iphonesimulator-arm64']
+
+        hsc = HostSpecificConfiguration('iphoneos-arm64', args)
+
+        self.assertEqual(len(hsc.sdks_to_configure), 1)
+        self.assertIn('IOS', hsc.sdks_to_configure)
+
+        self.assertEqual(len(hsc.swift_stdlib_build_targets), 0)
+
     def generate_should_skip_building_platform(
             host_target, sdk_name, build_target, build_arg_name):
         def test(self):
@@ -318,6 +346,23 @@ class ToolchainTestCase(unittest.TestCase):
         args.only_executable_test = True
         after = HostSpecificConfiguration('macosx-x86_64', args)
         self.assertIn('check-swift-only_executable-macosx-x86_64',
+                      after.swift_test_run_targets)
+
+    def test_should_allow_testing_only_non_executable_tests(self):
+        args = self.default_args()
+        args.build_osx = True
+        args.test_osx = True
+        args.host_target = 'macosx-x86_64'
+        args.stdlib_deployment_targets = ['macosx-x86_64']
+        args.build_stdlib_deployment_targets = 'all'
+
+        before = HostSpecificConfiguration('macosx-x86_64', args)
+        self.assertIn('check-swift-macosx-x86_64',
+                      before.swift_test_run_targets)
+
+        args.only_non_executable_test = True
+        after = HostSpecificConfiguration('macosx-x86_64', args)
+        self.assertIn('check-swift-only_non_executable-macosx-x86_64',
                       after.swift_test_run_targets)
 
     def generate_should_build_benchmarks(host_target, build_arg_name):
@@ -616,8 +661,11 @@ class ToolchainTestCase(unittest.TestCase):
             build_tvos_simulator=False,
             build_watchos_device=False,
             build_watchos_simulator=False,
+            maccatalyst=False,
+            maccatalyst_ios_tests=False,
             long_test=False,
             only_executable_test=False,
+            only_non_executable_test=False,
             stress_test=False,
             test_android=False,
             test_android_host=False,

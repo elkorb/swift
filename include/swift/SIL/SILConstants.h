@@ -73,7 +73,7 @@ public:
   SymbolicValueBumpAllocator() {}
   ~SymbolicValueBumpAllocator() {}
 
-  void *allocate(unsigned long byteSize, unsigned alignment) {
+  void *allocate(unsigned long byteSize, unsigned alignment) override {
     return bumpAllocator.Allocate(byteSize, alignment);
   }
 };
@@ -119,6 +119,10 @@ public:
     /// Attempted to load from/store into a SIL value that was not tracked by
     /// the interpreter.
     UntrackedSILValue,
+
+    /// Encountered a checked cast operation whose result cannot be evaluated
+    /// to a constant.
+    UnknownCastResult,
 
     /// Attempted to find a concrete protocol conformance for a witness method
     /// and failed.
@@ -600,6 +604,11 @@ public:
   /// version. This only works for valid constants.
   SymbolicValue cloneInto(SymbolicValueAllocator &allocator) const;
 
+  /// Check that all nested SymbolicValues are constant. Symbolic values such as arrays,
+  /// aggregates and pointers can contain non-constant symbolic values, when instructions
+  /// are skipped during evaluation.
+  bool containsOnlyConstants() const;
+
   void print(llvm::raw_ostream &os, unsigned indent = 0) const;
   void dump() const;
 };
@@ -729,6 +738,8 @@ public:
   SILType getClosureType() { return closureInst->getType(); }
 
   SubstitutionMap getCallSubstitutionMap() { return substitutionMap; }
+
+  bool hasOnlyConstantCaptures() { return !hasNonConstantCaptures; }
 };
 
 } // end namespace swift

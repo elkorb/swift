@@ -182,6 +182,36 @@ OptionSet<SanitizerKind> swift::parseSanitizerArgValues(
             + toStringRef(SanitizerKind::Thread)).toStringRef(b2));
   }
 
+  // Scudo can only be run with ubsan.
+  if (sanitizerSet & SanitizerKind::Scudo) {
+    OptionSet<SanitizerKind> allowedSet;
+    allowedSet |= SanitizerKind::Scudo;
+    allowedSet |= SanitizerKind::Undefined;
+
+    auto forbiddenOptions = sanitizerSet - allowedSet;
+
+    if (forbiddenOptions) {
+      SanitizerKind forbidden;
+
+      if (forbiddenOptions & SanitizerKind::Address) {
+        forbidden = SanitizerKind::Address;
+      } else if (forbiddenOptions & SanitizerKind::Thread) {
+          forbidden = SanitizerKind::Thread;
+      } else {
+        assert(forbiddenOptions & SanitizerKind::Fuzzer);
+        forbidden = SanitizerKind::Fuzzer;
+      }
+
+      SmallString<128> b1;
+      SmallString<128> b2;
+      Diags.diagnose(SourceLoc(), diag::error_argument_not_allowed_with,
+          (A->getOption().getPrefixedName()
+              + toStringRef(SanitizerKind::Scudo)).toStringRef(b1),
+          (A->getOption().getPrefixedName()
+              + toStringRef(forbidden)).toStringRef(b2));
+      }
+  }
+
   return sanitizerSet;
 }
 
@@ -226,6 +256,22 @@ OptionSet<SanitizerKind> swift::parseSanitizerRecoverArgValues(
   }
 
   return sanitizerRecoverSet;
+}
+
+// Note this implementation cannot be inlined at its use site because it calls
+// `toStringRef(const SanitizerKind).`
+bool swift::parseSanitizerAddressUseODRIndicator(
+    const llvm::opt::Arg *A, const OptionSet<SanitizerKind> &enabledSanitizers,
+    DiagnosticEngine &Diags) {
+  // Warn if ASan isn't enabled.
+  if (!(enabledSanitizers & SanitizerKind::Address)) {
+    Diags.diagnose(
+        SourceLoc(), diag::warning_option_requires_specific_sanitizer,
+        A->getOption().getPrefixedName(), toStringRef(SanitizerKind::Address));
+    return false;
+  }
+
+  return true;
 }
 
 std::string swift::getSanitizerList(const OptionSet<SanitizerKind> &Set) {

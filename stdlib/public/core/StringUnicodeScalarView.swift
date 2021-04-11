@@ -61,7 +61,7 @@ extension String {
   ///     }
   ///     // Prints "My favorite emoji is "
   @frozen
-  public struct UnicodeScalarView {
+  public struct UnicodeScalarView: Sendable {
     @usableFromInline
     internal var _guts: _StringGuts
 
@@ -169,7 +169,7 @@ extension String.UnicodeScalarView: BidirectionalCollection {
 
 extension String.UnicodeScalarView {
   @frozen
-  public struct Iterator: IteratorProtocol {
+  public struct Iterator: IteratorProtocol, Sendable {
     @usableFromInline
     internal var _guts: _StringGuts
 
@@ -365,7 +365,7 @@ extension String.UnicodeScalarIndex {
   /// in the string.
   ///
   ///     let cafe = "Café 🍵"
-  ///     let i = cafe.unicodeScalars.firstIndex(of: "🍵")
+  ///     let i = cafe.unicodeScalars.firstIndex(of: "🍵")!
   ///     let j = i.samePosition(in: cafe)!
   ///     print(cafe[j...])
   ///     // Prints "🍵"
